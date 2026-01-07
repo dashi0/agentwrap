@@ -103,23 +103,46 @@ ${messages.map((message) => {
   /**
    * Prepend tool calling instructions to a prompt.
    * Used by BaseServer when handling requests with function definitions.
+   *
+   * @param originalPrompt - The base prompt
+   * @param functions - List of available functions
+   * @param prefix - Optional request ID prefix for function names (e.g., "abc123" for functions like "abc123_getUserId")
    */
-  prependToolCallingInstructions(originalPrompt: string, functions: ChatCompletionFunction[]): string {
+  prependToolCallingInstructions(
+    originalPrompt: string,
+    functions: ChatCompletionFunction[],
+    prefix?: string
+  ): string {
     if (!functions?.length) {
       return originalPrompt;
     }
     const functionList = functions.map((f) => `- ${f.name}: ${f.description || 'No description'}`).join('\n');
+
+    // Build the MCP tool pattern - if prefix is provided, use it to help agent identify the functions
+    const mcpToolPattern = prefix
+      ? `${Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME}.${prefix}_*`
+      : `${Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME}.*`;
+
     return `${originalPrompt}
 <ToolCallHints>
-You have access to the following tools/functions, understand user instructions & tool calling history in above <Conversation />, call them when needed:
+You have access to the following tools/functions:
 
 ${functionList}
 
-IMPORTANT RULES:
-1. DO NOT simulate, fake, or describe what the function would return
-2. DO NOT write text like "I will call..." or "Waiting for..." - actually call the function
-4. Use the MCP tools ${Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME}.* available to you to invoke these functions
-5. After calling a function, wait for the real result before proceeding
+DECISION PROCESS:
+1. First, carefully read the user instructions and tool calling history in the <Conversation /> above.
+
+    * Pay special attention to any <Message role="tool"/> or <Message role="function"/> entries, as they contain results from previous tool calls.
+      The results you need may already be present - DO NOT call functions that have already been called with the same name/arguments
+
+2. Decide whether you need to call any tools/functions OR provide a final response
+
+IF YOU NEED TO CALL TOOLS:
+- Invoke it directly using MCP tools ${mcpToolPattern}
+- DO NOT write descriptive text like "I will call..." or "Waiting for..." - just call the function
+
+IF YOU DO NOT NEED TO CALL TOOLS:
+- Generate your final response based on the user instructions and any function results from the conversation history
 </ToolCallHints>`;
   }
 }

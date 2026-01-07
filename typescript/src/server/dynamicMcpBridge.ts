@@ -30,8 +30,9 @@
  *
  * Implementation notes:
  * - Single global HTTP server (avoid multiple ports for concurrent requests)
- * - Each request gets unique ID, function names suffixed with requestId
+ * - Each request gets unique ID, function names prefixed with requestId (format: {requestId}_{functionName})
  * - Multiple concurrent requests can coexist without conflict
+ * - Agent sees functions as: userDefinedFunctions.{requestId}_* in prompts for better identification
  */
 
 import http from 'http';
@@ -166,20 +167,21 @@ class DynamicMcpBridge {
   registerRequest(functions: ChatCompletionFunction[]): RequestContext {
     const requestId = randomBytes(6).toString('hex');
 
-    // Add suffix to function names to avoid conflicts between concurrent requests
+    // Add prefix to function names to avoid conflicts between concurrent requests
+    // Format: {requestId}_{originalName} so agent can identify them
     const functionNameMap = new Map<string, string>();
-    const suffixedFunctions = functions.map((fn) => {
-      const suffixedName = `${fn.name}_${requestId}`;
-      functionNameMap.set(suffixedName, fn.name);
+    const prefixedFunctions = functions.map((fn) => {
+      const prefixedName = `${requestId}_${fn.name}`;
+      functionNameMap.set(prefixedName, fn.name);
 
       return {
         ...fn,
-        name: suffixedName,
+        name: prefixedName,
       };
     });
 
     // Create dynamic MCP server for these user-defined functions
-    const mcpServer = new DynamicMcpServer(suffixedFunctions);
+    const mcpServer = new DynamicMcpServer(prefixedFunctions);
 
     const context: RequestContext = {
       requestId,
@@ -395,19 +397,20 @@ class DynamicMcpBridge {
   }
 
   /**
-   * Remove suffix from function name to get original name.
+   * Remove prefix from function name to get original name.
+   * Works with both old suffix format (name_id) and new prefix format (id_name).
    */
-  removeFunctionSuffix(suffixedName: string): string {
+  removeFunctionPrefix(prefixedName: string): string {
     // Find the context that has this function
     for (const context of this.requests.values()) {
-      const originalName = context.functionNameMap.get(suffixedName);
+      const originalName = context.functionNameMap.get(prefixedName);
       if (originalName) {
         return originalName;
       }
     }
 
     // If not found, return as-is (shouldn't happen)
-    return suffixedName;
+    return prefixedName;
   }
 
   /**

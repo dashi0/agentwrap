@@ -152,12 +152,6 @@ export class OpenAICompatibleServer extends BaseServer<
     const responseId = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
 
-    // Convert request to prompt (with tool calling instructions if functions are provided)
-    const basePrompt = this.convertRequestToRawPrompt(request);
-    const prompt = functions.length > 0
-      ? this.prompts.prependToolCallingInstructions(basePrompt, functions)
-      : basePrompt;
-
     // Setup MCP bridge conditionally if functions are provided
     let mcpContext: any = null;
     let configOverrides: any = undefined;
@@ -165,7 +159,7 @@ export class OpenAICompatibleServer extends BaseServer<
     let toolCalls: any[] = [];
 
     if (functions.length > 0) {
-      // Register request with dynamic MCP bridge
+      // Register request with dynamic MCP bridge (must do this first to get requestId)
       mcpContext = dynamicMcpBridge.registerRequest(functions);
 
       // Ensure MCP server is started
@@ -192,6 +186,12 @@ export class OpenAICompatibleServer extends BaseServer<
 
       configOverrides = { skills: [dynamicMcpSkill] };
     }
+
+    // Convert request to prompt (with tool calling instructions if functions are provided)
+    const basePrompt = this.convertRequestToRawPrompt(request);
+    const prompt = functions.length > 0 && mcpContext
+      ? this.prompts.prependToolCallingInstructions(basePrompt, functions, mcpContext.requestId)
+      : basePrompt;
 
     // Setup streaming headers if needed
     if (isStreaming && res) {
@@ -324,7 +324,7 @@ export class OpenAICompatibleServer extends BaseServer<
           ...tc,
           function: {
             ...tc.function,
-            name: dynamicMcpBridge.removeFunctionSuffix(tc.function.name),
+            name: dynamicMcpBridge.removeFunctionPrefix(tc.function.name),
           },
         }));
 
