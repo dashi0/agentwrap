@@ -197,29 +197,39 @@ class DynamicMcpServer:
         """
         name = params.get("name", "")
         args = params.get("arguments", {})
+        args_string = json.dumps(args)
 
-        # Generate unique tool call ID
+        # Check if this exact tool call already exists (deduplicate)
         with self._tool_calls_lock:
-            tool_call_id = f"call_{int(time.time() * 1000)}_{self.next_tool_call_id}"
-            self.next_tool_call_id += 1
-
-            # Record the tool call
-            tool_call = ToolCallRecord(
-                id=tool_call_id,
-                function={
-                    "name": name,
-                    "arguments": json.dumps(args),
-                },
+            is_duplicate = any(
+                tc.function["name"] == name and tc.function["arguments"] == args_string
+                for tc in self.tool_calls
             )
 
-            self.tool_calls.append(tool_call)
+            if not is_duplicate:
+                # Generate unique tool call ID
+                tool_call_id = f"call_{int(time.time() * 1000)}_{self.next_tool_call_id}"
+                self.next_tool_call_id += 1
 
-        # Call event callback if set
-        if self._on_tool_call:
-            self._on_tool_call(tool_call)
+                # Record the tool call
+                tool_call = ToolCallRecord(
+                    id=tool_call_id,
+                    function={
+                        "name": name,
+                        "arguments": args_string,
+                    },
+                )
 
-        # Schedule agent termination (delayed to allow multiple tool calls)
-        self._schedule_termination()
+                self.tool_calls.append(tool_call)
+
+                # Call event callback if set
+                if self._on_tool_call:
+                    self._on_tool_call(tool_call)
+
+                # Schedule agent termination (delayed to allow multiple tool calls)
+                self._schedule_termination()
+            else:
+                print(f"[DynamicMcpServer] Skipping duplicate tool call: {name} with args {args_string}")
 
         # Return success response
         return {

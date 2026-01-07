@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from ..agent import BaseAgent
 from ..base_server import BaseServer, ToolCall
 from ..config import AgentInput, AllAgentConfigs
+from ..prompts import Prompts
 from ..events import (
     CommandExecutionEvent,
     MessageEvent,
@@ -73,6 +74,7 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
         self.mcp_server_host = options.mcp_server_host
         self.termination_delay_ms = options.termination_delay_ms
         self.bypass_request = options.bypass_request
+        self.prompts = Prompts()
 
     def register_routes(self, app):
         """Register OpenAI-specific HTTP routes."""
@@ -170,8 +172,14 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
 
             mcp_context.mcp_server.on_terminate(on_terminate)
 
-        # Convert request to prompt
-        prompt = self.convert_request_to_prompt(request)
+        # Convert request to prompt (with tool calling instructions if functions are provided)
+        base_prompt = self.convert_request_to_prompt(request)
+        if functions and mcp_context:
+            prompt = self.prompts.prepend_tool_calling_instructions(
+                base_prompt, functions, mcp_context.request_id
+            )
+        else:
+            prompt = base_prompt
         agent_input = AgentInput.from_query(prompt)
 
         collected_content: List[str] = []
@@ -271,7 +279,7 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                     ToolCall(
                         id=tc.id,
                         function={
-                            "name": dynamic_mcp_bridge.remove_function_suffix(
+                            "name": dynamic_mcp_bridge.remove_function_prefix(
                                 tc.function["name"]
                             ),
                             "arguments": tc.function["arguments"],
@@ -311,17 +319,8 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
 
     def convert_request_to_prompt(self, request: ChatCompletionRequest) -> str:
         """Convert OpenAI request to prompt string."""
-        # Simple conversion for now - just concatenate messages
-        prompt_parts = []
-        for msg in request.messages:
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                prompt_parts.append(f"{role}: {content}")
-            else:
-                prompt_parts.append(str(msg))
-
-        return "\n\n".join(prompt_parts)
+        # Use Prompts class to handle tool_calls properly
+        return self.prompts.function_call_history_to_prompt(request.messages)
 
     def create_tool_call_response(
         self, request: ChatCompletionRequest, tool_calls: List[ToolCall]

@@ -60,6 +60,8 @@ This document outlines the core principles, conventions, and best practices for 
 - Verify actual CLI interactions
 - Test HTTP server endpoints with real requests
 - Ensure thread safety and concurrency handling
+- Integration test uses real agent execution and CONSUMES REAL TOKENS
+- Only re-run integration test after massive code changes
 
 **Test requirements:**
 - ✅ Every public function/method must have unit tests

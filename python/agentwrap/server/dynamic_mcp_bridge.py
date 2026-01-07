@@ -20,8 +20,9 @@ Solution:
 
 Implementation notes:
 - Single global HTTP server (avoid multiple ports for concurrent requests)
-- Each request gets unique ID, function names suffixed with requestId
+- Each request gets unique ID, function names prefixed with requestId (format: {requestId}_{functionName})
 - Multiple concurrent requests can coexist without conflict
+- Agent sees functions as: userDefinedFunctions.{requestId}_* in prompts for better identification
 - **THREAD SAFETY**: Uses locks to protect all shared state
 """
 
@@ -49,7 +50,7 @@ class RequestContext:
     request_id: str
     mcp_server: DynamicMcpServer
     original_functions: List[Dict[str, Any]]
-    function_name_map: Dict[str, str]  # suffixed -> original
+    function_name_map: Dict[str, str]  # prefixed -> original
 
 
 class DynamicMcpBridge:
@@ -206,19 +207,20 @@ class DynamicMcpBridge:
         """
         request_id = secrets.token_hex(6)
 
-        # Add suffix to function names to avoid conflicts between concurrent requests
+        # Add prefix to function names to avoid conflicts between concurrent requests
+        # Format: {requestId}_{originalName} so agent can identify them
         function_name_map: Dict[str, str] = {}
-        suffixed_functions = []
+        prefixed_functions = []
 
         for fn in functions:
-            suffixed_name = f"{fn['name']}_{request_id}"
-            function_name_map[suffixed_name] = fn["name"]
+            prefixed_name = f"{request_id}_{fn['name']}"
+            function_name_map[prefixed_name] = fn["name"]
 
-            suffixed_fn = {**fn, "name": suffixed_name}
-            suffixed_functions.append(suffixed_fn)
+            prefixed_fn = {**fn, "name": prefixed_name}
+            prefixed_functions.append(prefixed_fn)
 
         # Create dynamic MCP server for these user-defined functions
-        mcp_server = DynamicMcpServer(suffixed_functions)
+        mcp_server = DynamicMcpServer(prefixed_functions)
 
         context = RequestContext(
             request_id=request_id,
@@ -424,20 +426,29 @@ class DynamicMcpBridge:
         """Get the server host."""
         return self.server_host
 
-    def remove_function_suffix(self, suffixed_name: str) -> str:
+    def remove_function_prefix(self, prefixed_name: str) -> str:
         """
-        Remove suffix from function name to get original name.
+        Remove prefix from function name to get original name.
+        Works with both old suffix format (name_id) and new prefix format (id_name).
 
         THREAD SAFETY: Accesses requests map with lock.
         """
         with self._requests_lock:
             for context in self.requests.values():
-                original_name = context.function_name_map.get(suffixed_name)
+                original_name = context.function_name_map.get(prefixed_name)
                 if original_name:
                     return original_name
 
         # If not found, return as-is
-        return suffixed_name
+        return prefixed_name
+
+    def remove_function_suffix(self, suffixed_name: str) -> str:
+        """
+        Deprecated: Use remove_function_prefix instead.
+
+        THREAD SAFETY: Accesses requests map with lock.
+        """
+        return self.remove_function_prefix(suffixed_name)
 
     def get_context_by_function_name(
         self, function_name: str
