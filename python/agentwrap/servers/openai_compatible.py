@@ -205,23 +205,12 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                         print("[OpenAICompatibleServer] Function calls detected, stopping event processing")
                         break
 
-                    content_chunk = None
-
-                    # Convert event to content
-                    if isinstance(event, ReasoningEvent):
-                        content_chunk = f"[Reasoning] {event.content}\n"
-                    elif isinstance(event, CommandExecutionEvent):
-                        content_chunk = f"[Command] {event.command}\n"
-                        if event.output:
-                            content_chunk += f"{event.output}\n"
-                    elif isinstance(event, SkillInvokedEvent):
-                        content_chunk = f"[Skill] {event.skill_name}\n"
-                    elif isinstance(event, MessageEvent):
-                        content_chunk = event.content
-                        # Collect for final response
-                        collected_content.append(content_chunk or "")
-
+                    content_chunk = self._convert_event_to_content_chunk(event)
                     if content_chunk:
+                        # Collect message content for final response
+                        if isinstance(event, MessageEvent):
+                            collected_content.append(content_chunk)
+
                         # Stream the chunk
                         yield f"data: {json.dumps({
                             'id': response_id,
@@ -265,8 +254,11 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                     print("[OpenAICompatibleServer] Function calls detected, stopping event processing")
                     break
 
-                if isinstance(event, MessageEvent):
-                    collected_content.append(event.content or "")
+                content_chunk = self._convert_event_to_content_chunk(event)
+                if content_chunk:
+                    # Collect message content for final response
+                    if isinstance(event, MessageEvent):
+                        collected_content.append(content_chunk)
 
             # Return response based on whether functions were called
             if terminated and mcp_context:
@@ -301,6 +293,22 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                 from ..server.dynamic_mcp_bridge import dynamic_mcp_bridge
 
                 dynamic_mcp_bridge.unregister_request(mcp_context.request_id)
+
+    def _convert_event_to_content_chunk(self, event) -> Optional[str]:
+        """
+        Convert agent event to content chunk.
+        Extracted to avoid duplication in event processing loops.
+        """
+        if isinstance(event, ReasoningEvent):
+            return f"[Reasoning] {event.content}\n"
+        elif isinstance(event, CommandExecutionEvent):
+            output_part = f"{event.output}\n" if event.output else ""
+            return f"[Command] {event.command}\n{output_part}"
+        elif isinstance(event, SkillInvokedEvent):
+            return f"[Skill] {event.skill_name}\n"
+        elif isinstance(event, MessageEvent):
+            return event.content
+        return None
 
     def _extract_functions(self, request: ChatCompletionRequest) -> List[Dict[str, Any]]:
         """Extract function definitions from request."""

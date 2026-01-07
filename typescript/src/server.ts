@@ -15,10 +15,6 @@ import express from 'express';
 import type { Express, Request, Response } from 'express';
 import http from 'http';
 import { BaseAgent } from './agent.js';
-import type { AllAgentConfigs } from './config.js';
-import { isMessageEvent } from './events.js';
-import { dynamicMcpBridge } from './server/dynamicMcpBridge.js';
-import type { ChatCompletionFunction } from './server/types.js';
 import { Prompts } from './prompts.js';
 
 export interface HttpServerOptions {

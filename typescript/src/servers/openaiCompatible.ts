@@ -29,8 +29,11 @@ import {
   isReasoningEvent,
   isCommandExecutionEvent,
   isSkillInvokedEvent,
+  type Event,
 } from '../events.js';
-import { dynamicMcpBridge } from '../server/dynamicMcpBridge.js';
+import { dynamicMcpBridge, type RequestContext } from '../server/dynamicMcpBridge.js';
+import type { ToolCallRecord } from '../server/dynamicMcpServer.js';
+import type { AllAgentConfigs } from '../config.js';
 
 export interface OpenAIServerOptions {
   mcpServerPort?: number;
@@ -153,10 +156,10 @@ export class OpenAICompatibleServer extends BaseServer<
     const created = Math.floor(Date.now() / 1000);
 
     // Setup MCP bridge conditionally if functions are provided
-    let mcpContext: any = null;
-    let configOverrides: any = undefined;
+    let mcpContext: RequestContext | null = null;
+    let configOverrides: Partial<AllAgentConfigs> | undefined = undefined;
     let terminated = false;
-    let toolCalls: any[] = [];
+    let toolCalls: ToolCallRecord[] = [];
 
     if (functions.length > 0) {
       // Register request with dynamic MCP bridge (must do this first to get requestId)
@@ -218,7 +221,7 @@ export class OpenAICompatibleServer extends BaseServer<
       if (functions.length > 0 && mcpContext) {
         // Create termination promise
         const terminationPromise = new Promise<void>((resolve) => {
-          mcpContext.mcpServer.once('terminate', (calls: any[]) => {
+          mcpContext.mcpServer.once('terminate', (calls: ToolCallRecord[]) => {
             terminated = true;
             toolCalls = calls;
             resolve();
@@ -388,7 +391,7 @@ export class OpenAICompatibleServer extends BaseServer<
    * Convert agent event to content chunk.
    * Extracted to avoid duplication in event processing loops.
    */
-  private convertEventToContentChunk(event: any): string | null {
+  private convertEventToContentChunk(event: Event): string | null {
     if (isReasoningEvent(event)) {
       return `[Reasoning] ${event.content}\n`;
     } else if (isCommandExecutionEvent(event)) {

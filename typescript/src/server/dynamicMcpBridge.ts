@@ -86,11 +86,11 @@ interface MCPTool {
  * Context for each OpenAI chat completion request.
  * Tracks function definitions and their MCP server instance.
  */
-interface RequestContext {
+export interface RequestContext {
   requestId: string;
   mcpServer: DynamicMcpServer;
   originalFunctions: ChatCompletionFunction[];
-  functionNameMap: Map<string, string>; // suffixed -> original
+  functionNameMap: Map<string, string>; // prefixed -> original
 }
 
 /**

@@ -38,7 +38,7 @@ interface MCPTool {
   };
 }
 
-interface ToolCallRecord {
+export interface ToolCallRecord {
   id: string;
   function: {
     name: string;
