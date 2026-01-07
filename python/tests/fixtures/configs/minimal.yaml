@@ -1,0 +1,4 @@
+# Minimal test configuration
+skills:
+  - type: anthropic
+    path: ../skills/echo_skill
