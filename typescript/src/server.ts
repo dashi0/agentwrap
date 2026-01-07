@@ -15,11 +15,11 @@ import express from 'express';
 import type { Express, Request, Response } from 'express';
 import http from 'http';
 import { BaseAgent } from './agent.js';
-import { AgentInput } from './config.js';
 import type { AllAgentConfigs } from './config.js';
 import { isMessageEvent } from './events.js';
 import { dynamicMcpBridge } from './server/dynamicMcpBridge.js';
 import type { ChatCompletionFunction } from './server/types.js';
+import { Prompts } from './prompts.js';
 
 export interface HttpServerOptions {
   port?: number;
@@ -39,10 +39,16 @@ export interface ToolCall {
   };
 }
 
-export abstract class BaseServer<TRequest = any, TResponse = any> {
+export abstract class BaseServer<TRequest = unknown, TResponse = unknown> {
   private app?: Express;
   private httpServer?: http.Server;
   protected agent?: BaseAgent;
+  protected prompts: Prompts;
+
+  constructor(agent?: BaseAgent, prompts?: Prompts) {
+    this.agent = agent;
+    this.prompts = prompts || new Prompts();
+  }
 
   /**
    * Handle a request and return a response.
@@ -60,7 +66,7 @@ export abstract class BaseServer<TRequest = any, TResponse = any> {
    * Convert request to prompt string.
    * Subclasses must implement this to handle their specific request format.
    */
-  protected abstract convertRequestToPrompt(request: TRequest): string;
+  protected abstract convertRequestToRawPrompt(request: TRequest): string;
 
   /**
    * Create response for function/tool calls.
@@ -80,127 +86,6 @@ export abstract class BaseServer<TRequest = any, TResponse = any> {
     content: string
   ): TResponse;
 
-  /**
-   * Core function calling logic (shared across all server implementations).
-   *
-   * Handles the common flow:
-   * 1. Register functions with dynamic MCP bridge
-   * 2. Start MCP server
-   * 3. Inject MCP skill into agent
-   * 4. Run agent with function calling capability
-   * 5. Return either function calls or final response
-   * 6. Cleanup
-   */
-  protected async handleWithFunctionCallingCore(
-    request: TRequest,
-    functions: ChatCompletionFunction[],
-    options: FunctionCallingOptions
-  ): Promise<TResponse> {
-    if (!this.agent) {
-      throw new Error('Agent not set. Subclass must set this.agent in constructor.');
-    }
-
-    // Register request with dynamic MCP bridge (adds suffix to function names)
-    const context = dynamicMcpBridge.registerRequest(functions);
-
-    // Ensure dynamic MCP bridge HTTP server is started
-    const port = await dynamicMcpBridge.ensureServerStarted(
-      options.mcpServerHost,
-      options.mcpServerPort
-    );
-
-    try {
-      console.log(
-        `[BaseServer] Using dynamic MCP bridge on ${options.mcpServerHost}:${port}`
-      );
-      console.log(
-        `[BaseServer] Request ${context.requestId} functions:`,
-        functions.map((f) => f.name)
-      );
-
-      // Convert request to prompt (format-specific)
-      const prompt = this.convertRequestToPrompt(request);
-      const agentInput = AgentInput.fromQuery(prompt);
-
-      // Create temporary dynamic MCP skill for function calling
-      // This is NOT written to config file, only passed via configOverrides
-      const dynamicMcpSkill = {
-        type: 'mcp' as const,
-        transport: 'streamable-http' as const,
-        url: `http://${options.mcpServerHost}:${port}`,
-        name: 'userDefinedFunctions', // Fixed name for dynamic MCP
-      };
-
-      // Build configOverrides with dynamic MCP skill
-      // Note: We inject this dynamically without modifying the agent's base config
-      const configOverrides: Partial<AllAgentConfigs> = {
-        skills: [dynamicMcpSkill],
-      };
-
-      // Set up termination handler
-      let terminated = false;
-      const terminationPromise = new Promise<ToolCall[]>((resolve) => {
-        context.mcpServer.once('terminate', (toolCalls) => {
-          terminated = true;
-          resolve(toolCalls);
-        });
-      });
-
-      // Run agent with configOverrides (dynamic MCP passed via -c flags)
-      const agentPromise = this.runAgentCore(agentInput, configOverrides);
-
-      // Wait for either agent completion or termination
-      const result = await Promise.race([agentPromise, terminationPromise]);
-
-      // If terminated (function calls detected)
-      if (terminated || Array.isArray(result)) {
-        const toolCalls = Array.isArray(result)
-          ? result
-          : context.mcpServer.getToolCalls();
-
-        // Remove suffix from function names before returning
-        const originalToolCalls = toolCalls.map((tc) => ({
-          ...tc,
-          function: {
-            ...tc.function,
-            name: dynamicMcpBridge.removeFunctionSuffix(tc.function.name),
-          },
-        }));
-
-        // Return function call response (format-specific)
-        return this.createToolCallResponse(request, originalToolCalls);
-      } else {
-        // Agent completed normally
-        const content = result as string;
-        return this.createNormalResponse(request, content);
-      }
-    } finally {
-      // Cleanup: unregister request (but keep dynamic MCP bridge running)
-      dynamicMcpBridge.unregisterRequest(context.requestId);
-    }
-  }
-
-  /**
-   * Run agent and collect output (shared logic).
-   */
-  protected async runAgentCore(
-    agentInput: any,
-    configOverrides?: Partial<AllAgentConfigs>
-  ): Promise<string> {
-    if (!this.agent) {
-      throw new Error('Agent not set. Subclass must set this.agent in constructor.');
-    }
-
-    const messages: string[] = [];
-
-    for await (const event of this.agent.run(agentInput, configOverrides)) {
-      if (isMessageEvent(event)) {
-        messages.push(event.content);
-      }
-    }
-
-    return messages.join('\n\n');
-  }
 
   /**
    * Register custom HTTP routes.

@@ -43,10 +43,8 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
       skills: [],
     });
 
-    const input = AgentInput.fromQuery('What is 2+2? Just give the number.');
-
     const events = [];
-    for await (const event of agent.run(input)) {
+    for await (const event of agent.run('What is 2+2? Just give the number.')) {
       events.push(event);
     }
 
@@ -78,10 +76,8 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
       { role: 'user' as const, content: 'What country is that in?' },
     ];
 
-    const input = AgentInput.fromMessages(messages);
-
     const events = [];
-    for await (const event of agent.run(input)) {
+    for await (const event of agent.run(messages)) {
       events.push(event);
     }
 
@@ -102,8 +98,6 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
       skills: [],
     });
 
-    const input = AgentInput.fromQuery('What is 5+5?');
-
     // Override working dir
     const overrides = {
       agentConfig: {
@@ -113,7 +107,7 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
     };
 
     const events = [];
-    for await (const event of agent.run(input, overrides)) {
+    for await (const event of agent.run('What is 5+5?', { configOverrides: overrides })) {
       events.push(event);
     }
 
@@ -139,13 +133,13 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
       required: ['answer', 'explanation'],
     };
 
-    const input = AgentInput.fromQuery(
-      'What is 10 + 15? Provide answer and explanation.'
+    const result = await agent.runStructured(
+      'What is 10 + 15? Provide answer and explanation.',
+      schema,
+      {
+        maxRetries: 2,
+      }
     );
-
-    const result = await agent.runStructured(input, schema, {
-      maxRetries: 2,
-    });
 
     expect(result).toBeDefined();
     expect(typeof result).toBe('object');
@@ -235,15 +229,13 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
     await agent.configure(configDict, { verbose: false });
 
     // Create input that should trigger echo skill
-    const input = AgentInput.fromQuery(
-      'Use the echo skill to echo back this message: Hello from TypeScript integration test!'
-    );
+    const query = 'Use the echo skill to echo back this message: Hello from TypeScript integration test!';
 
     // Run agent and collect events
     const events = [];
     const messages = [];
 
-    for await (const event of agent.run(input)) {
+    for await (const event of agent.run(query)) {
       events.push(event);
       if (event.type === EventType.MESSAGE) {
         messages.push(event.content);
@@ -292,10 +284,8 @@ describe.skipIf(skipIntegration)('CodexAgent Integration', () => {
     };
 
     try {
-      const input = AgentInput.fromQuery('What is 3+3?');
-
       const events = [];
-      for await (const event of agent.run(input, overrides)) {
+      for await (const event of agent.run('What is 3+3?', { configOverrides: overrides })) {
         events.push(event);
       }
 

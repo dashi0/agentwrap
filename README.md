@@ -118,7 +118,7 @@ AgentWrap provides SDKs in multiple languages with consistent APIs:
 
 | Language | Status | Package | Documentation |
 |----------|--------|---------|---------------|
-| 🐍 **Python** | ✅ Stable | `pip install agentwrap` | [Python Docs](./python/README.md) |
+| 🐍 **Python** | WIP | `pip install agentwrap` | [Python Docs](./python/README.md) |
 | 📘 **TypeScript** | ✅ Stable | `npm install agentwrap` | [TypeScript Docs](./typescript/README.md) |
 
 ---

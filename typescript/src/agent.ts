@@ -7,7 +7,8 @@
 
 import type { Event } from './events.js';
 import { isMessageEvent } from './events.js';
-import type { AgentInput, AllAgentConfigs } from './config.js';
+import type { AgentInput, AllAgentConfigs, Message } from './config.js';
+import { Prompts } from './prompts.js';
 
 // ============================================================================
 // Structured Output Utilities
@@ -30,7 +31,7 @@ export class JSONExtractor {
   /**
    * Try multiple strategies to extract JSON from text.
    */
-  static extract(text: string): unknown | null {
+  static extract(text: string): unknown {
     // Strategy 1: Direct parse
     try {
       return JSON.parse(text.trim()) as unknown;
@@ -165,10 +166,31 @@ export function createStructuredPrompt(
 // ============================================================================
 
 /**
+ * Options for agent execution.
+ */
+export interface RunOptions {
+  /** Configuration overrides for this run */
+  configOverrides?: Partial<AllAgentConfigs>;
+}
+
+/**
+ * Options for structured output execution.
+ */
+export interface RunStructuredOptions extends RunOptions {
+  /** Maximum number of retry attempts on validation failure */
+  maxRetries?: number;
+}
+
+/**
  * Abstract base class for all agent implementations.
  */
 export abstract class BaseAgent {
   protected config?: AllAgentConfigs;
+  protected prompts: Prompts;
+
+  constructor(prompts?: Prompts) {
+    this.prompts = prompts || new Prompts();
+  }
 
   /**
    * Get current agent configuration.
@@ -178,29 +200,60 @@ export abstract class BaseAgent {
   }
 
   /**
-   * Normalize input to AgentInput format.
-   * Accepts either AgentInput object or a simple string query.
+   * Get current prompts instance.
    */
-  protected normalizeInput(input: AgentInput | string): AgentInput {
+  getPrompts(): Prompts {
+    return this.prompts;
+  }
+
+  /**
+   * Normalize input to AgentInput format.
+   * Accepts AgentInput object, Message array, or a simple string query.
+   */
+  protected normalizeInput(
+    input: AgentInput | Message[] | string,
+  ): AgentInput {
+    const effectivePrompts = this.prompts;
+
     if (typeof input === 'string') {
       return {
         messages: [{ role: 'user', content: input }],
+      };
+    }
+    if (Array.isArray(input)) {
+      // Convert Message[] to prompt string using prompts instance
+      const promptStr = effectivePrompts.messagesToPrompt(input);
+      return {
+        messages: [{ role: 'user', content: promptStr }],
       };
     }
     return input;
   }
 
   /**
+   * Execute agent with raw prompt string.
+   *
+   * - prompt: The formatted prompt string to send to the agent.
+   * - options: Optional run options such as config overrides.
+   * 
+   * Subclasses must implement this method.
+   */
+  abstract runRaw(
+    prompt: string,
+    options?: RunOptions
+  ): AsyncIterable<Event>;
+
+  /**
    * Execute agent with streaming output.
    *
-   * Accepts either an AgentInput object or a simple string query.
-   * If a string is provided, it will be automatically converted to AgentInput.
+   * Accepts AgentInput object, Message array, or simple string query.
+   * String/array inputs are automatically converted to AgentInput format.
    *
    * Subclasses must implement this method.
    */
   abstract run(
-    agentInput: AgentInput | string,
-    configOverrides?: Partial<AllAgentConfigs>
+    agentInput: AgentInput | Message[] | string,
+    options?: RunOptions
   ): AsyncIterable<Event>;
 
   /**
@@ -209,15 +262,11 @@ export abstract class BaseAgent {
    * This method retries on parsing failures with more explicit instructions.
    */
   async runStructured(
-    agentInput: AgentInput | string,
+    agentInput: AgentInput | Message[] | string,
     schema: JSONSchema,
-    options: {
-      examples?: unknown[];
-      maxRetries?: number;
-      configOverrides?: Partial<AllAgentConfigs>;
-    } = {}
+    options: RunStructuredOptions = {}
   ): Promise<unknown> {
-    const { examples, maxRetries = 3, configOverrides } = options;
+    const { maxRetries = 3, configOverrides } = options;
     const parser = new StructuredOutputParser(schema);
 
     // Normalize input
@@ -229,44 +278,44 @@ export abstract class BaseAgent {
       throw new Error('AgentInput must have at least one message');
     }
 
-    const structuredQuery = createStructuredPrompt(lastMessage.content, schema, examples);
-
-    // Create new input with structured prompt
-    let structuredMessages = [
-      ...normalizedInput.messages.slice(0, -1),
-      { ...lastMessage, content: structuredQuery },
-    ];
-
+    const previousAttempts: [string, Error][] = [];
+    let currentAttemptOutput : string | null = null;
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // Use prompts.structuredOutputPrompt to generate the prompt
+        const structuredQuery = this.prompts.structuredOutputPrompt(
+          lastMessage.content,
+          schema,
+          previousAttempts
+        );
+
+        // Create new input with structured prompt
+        const structuredMessages = [
+          ...normalizedInput.messages.slice(0, -1),
+          { ...lastMessage, content: structuredQuery },
+        ];
+
         // Collect agent messages
         const messages: string[] = [];
 
-        for await (const event of this.run({ ...normalizedInput, messages: structuredMessages }, configOverrides)) {
+        for await (const event of this.run(
+          { ...normalizedInput, messages: structuredMessages },
+          { configOverrides }
+        )) {
           if (isMessageEvent(event)) {
             messages.push(event.content);
           }
         }
 
-        const fullOutput = messages.join('\n\n');
-        const result = parser.parse(fullOutput);
+        currentAttemptOutput = messages.join('\n\n');
+        const result = parser.parse(currentAttemptOutput);
         return result;
       } catch (error) {
+        previousAttempts.push([currentAttemptOutput || '', error as Error]);
         lastError = error as Error;
-
-        if (attempt < maxRetries - 1) {
-          // Retry with more explicit instructions
-          const retryQuery =
-            `${lastMessage.content}\n\nPrevious attempt failed: ${lastError.message}\n` +
-            'Please ensure you output VALID JSON.';
-
-          structuredMessages = [
-            ...normalizedInput.messages.slice(0, -1),
-            { ...lastMessage, content: createStructuredPrompt(retryQuery, schema, examples) },
-          ];
-        }
+        // If not the last attempt, will retry with incremented attempt number
       }
     }
 

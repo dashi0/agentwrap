@@ -6,20 +6,21 @@
  * call and signals the agent to stop.
  */
 
+import http from 'http';
 import { EventEmitter } from 'events';
 import type { ChatCompletionFunction } from './types.js';
 
-interface MCPRequest {
-  jsonrpc: '2.0';
-  id?: string | number;
+interface MCPRequest<TParams = unknown> {
+  jsonrpc?: '2.0';
+  id?: string | number | null;
   method: string;
-  params?: unknown;
+  params?: TParams;
 }
 
-interface MCPResponse {
+interface MCPResponse<TResult = unknown> {
   jsonrpc: '2.0';
-  id?: string | number;
-  result?: unknown;
+  id: string | number | null;
+  result?: TResult;
   error?: {
     code: number;
     message: string;
@@ -46,6 +47,14 @@ interface ToolCallRecord {
 }
 
 /**
+ * Event map for DynamicMcpServer.
+ */
+interface DynamicMcpServerEvents {
+  terminate: (toolCalls: ToolCallRecord[]) => void;
+  toolCall: (toolCall: ToolCallRecord) => void;
+}
+
+/**
  * Dynamic MCP Server that proxies user-defined functions.
  */
 export class DynamicMcpServer extends EventEmitter {
@@ -57,6 +66,36 @@ export class DynamicMcpServer extends EventEmitter {
   constructor(functions: ChatCompletionFunction[]) {
     super();
     this.functions = functions;
+  }
+
+  /**
+   * Type-safe event listener registration.
+   */
+  override on<K extends keyof DynamicMcpServerEvents>(
+    event: K,
+    listener: DynamicMcpServerEvents[K]
+  ): this {
+    return super.on(event, listener);
+  }
+
+  /**
+   * Type-safe one-time event listener registration.
+   */
+  override once<K extends keyof DynamicMcpServerEvents>(
+    event: K,
+    listener: DynamicMcpServerEvents[K]
+  ): this {
+    return super.once(event, listener);
+  }
+
+  /**
+   * Type-safe event emission.
+   */
+  override emit<K extends keyof DynamicMcpServerEvents>(
+    event: K,
+    ...args: Parameters<DynamicMcpServerEvents[K]>
+  ): boolean {
+    return super.emit(event, ...args);
   }
 
   /**
@@ -77,7 +116,7 @@ export class DynamicMcpServer extends EventEmitter {
   /**
    * Handle MCP request.
    */
-  handleRequest(request: MCPRequest): MCPResponse | null {
+  handleRequest<TParams = unknown>(request: MCPRequest<TParams>): MCPResponse | null {
     const { method, id, params } = request;
 
     console.log(`[DynamicMcpServer] Received request: method=${method}, id=${id}`);
@@ -103,7 +142,7 @@ export class DynamicMcpServer extends EventEmitter {
           console.log(`[DynamicMcpServer] Unknown method: ${method}`);
           return {
             jsonrpc: '2.0',
-            id,
+            id: id ?? null,
             error: {
               code: -32601,
               message: `Method not found: ${method}`,
@@ -114,7 +153,7 @@ export class DynamicMcpServer extends EventEmitter {
       console.error(`[DynamicMcpServer] Error:`, error);
       return {
         jsonrpc: '2.0',
-        id,
+        id: id ?? null,
         error: {
           code: -32603,
           message: `Internal error: ${(error as Error).message}`,
@@ -126,10 +165,10 @@ export class DynamicMcpServer extends EventEmitter {
   /**
    * Handle initialize request.
    */
-  private handleInitialize(id?: string | number): MCPResponse {
+  private handleInitialize(id?: string | number | null): MCPResponse {
     return {
       jsonrpc: '2.0',
-      id,
+      id: id ?? null,
       result: {
         protocolVersion: '2025-06-18',
         capabilities: {
@@ -146,10 +185,10 @@ export class DynamicMcpServer extends EventEmitter {
   /**
    * Handle tools/list request.
    */
-  private handleToolsList(id?: string | number): MCPResponse {
+  private handleToolsList(id?: string | number | null): MCPResponse {
     return {
       jsonrpc: '2.0',
-      id,
+      id: id ?? null,
       result: {
         tools: this.getTools(),
       },
@@ -162,35 +201,45 @@ export class DynamicMcpServer extends EventEmitter {
    * This records the function call and schedules agent termination.
    */
   private handleToolsCall(
-    id: string | number | undefined,
+    id: string | number | null | undefined,
     params: { name: string; arguments: Record<string, unknown> }
   ): MCPResponse {
     const { name, arguments: args } = params;
 
-    // Generate unique tool call ID
-    const toolCallId = `call_${Date.now()}_${this.nextToolCallId++}`;
+    // Check if this exact tool call already exists (deduplicate)
+    const argsString = JSON.stringify(args);
+    const isDuplicate = this.toolCalls.some(
+      (tc) => tc.function.name === name && tc.function.arguments === argsString
+    );
 
-    // Record the tool call
-    const toolCall: ToolCallRecord = {
-      id: toolCallId,
-      function: {
-        name,
-        arguments: JSON.stringify(args),
-      },
-    };
+    if (!isDuplicate) {
+      // Generate unique tool call ID
+      const toolCallId = `call_${Date.now()}_${this.nextToolCallId++}`;
 
-    this.toolCalls.push(toolCall);
+      // Record the tool call
+      const toolCall: ToolCallRecord = {
+        id: toolCallId,
+        function: {
+          name,
+          arguments: argsString,
+        },
+      };
 
-    // Emit event for monitoring
-    this.emit('toolCall', toolCall);
+      this.toolCalls.push(toolCall);
 
-    // Schedule agent termination (delayed to allow multiple tool calls)
-    this.scheduleTermination();
+      // Emit event for monitoring
+      this.emit('toolCall', toolCall);
+
+      // Schedule agent termination (delayed to allow multiple tool calls)
+      this.scheduleTermination();
+    } else {
+      console.log(`[DynamicMcpServer] Skipping duplicate tool call: ${name} with args ${argsString}`);
+    }
 
     // Return success response (the actual function will be called by user process)
     return {
       jsonrpc: '2.0',
-      id,
+      id: id ?? null,
       result: {
         content: [
           {
@@ -249,13 +298,14 @@ export class DynamicMcpServer extends EventEmitter {
  * Create HTTP handler for Streamable HTTP MCP endpoint (2025-03-26 spec).
  */
 export function createMcpSseHandler(mcpServer: DynamicMcpServer) {
-  return (req: any, res: any) => {
+  return (req: http.IncomingMessage, res: http.ServerResponse) => {
     console.log(`[createMcpSseHandler] Received ${req.method} request to ${req.url}`);
 
     // Handle request body
     let body = '';
-    req.on('data', (chunk: Buffer) => {
-      body += chunk.toString();
+    req.on('data', (chunk) => {
+      const chunkStr = chunk instanceof Buffer ? chunk.toString() : String(chunk);
+      body += chunkStr;
     });
 
     req.on('end', () => {
@@ -297,6 +347,7 @@ export function createMcpSseHandler(mcpServer: DynamicMcpServer) {
       } catch (error) {
         const errorResponse: MCPResponse = {
           jsonrpc: '2.0',
+          id: null,
           error: {
             code: -32700,
             message: 'Parse error',

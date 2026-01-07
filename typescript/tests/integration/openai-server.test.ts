@@ -57,7 +57,7 @@ describe.skipIf(skipIntegration)('OpenAI-Compatible Server Integration', () => {
    * Test Case 1, 2, 3: Complete function calling flow
    */
   it(
-    'should handle sequential function calls (a → b → summary)',
+    'should handle sequential function calls (getUserId → getProfile → summary)',
     async () => {
       // Define two functions: getUserId and getProfile
       // getProfile depends on getUserId's output

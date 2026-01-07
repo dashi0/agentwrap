@@ -39,6 +39,11 @@ export interface ChatCompletionMessageBase {
   name?: string;
 }
 
+export interface ChatCompletionSystemMessage extends ChatCompletionMessageBase {
+  role: 'system';
+  content: string;
+}
+
 export interface ChatCompletionUserMessage extends ChatCompletionMessageBase {
   role: 'user';
   content: string;
@@ -64,6 +69,7 @@ export interface ChatCompletionFunctionMessage extends ChatCompletionMessageBase
 }
 
 export type ChatCompletionMessage =
+  | ChatCompletionSystemMessage
   | ChatCompletionUserMessage
   | ChatCompletionAssistantMessage
   | ChatCompletionToolMessage

@@ -1,8 +1,7 @@
 import {
   CodexAgent,
-  AgentInput,
   OpenAICompatibleServer,
-} from './src/index.js';
+} from 'agentwrap';
 
 // ============================================================================
 // Example 1: Basic Usage with agent.run()
@@ -85,14 +84,12 @@ async function example2_StructuredAndConversation() {
     { role: 'user' as const, content: 'Respond to me via JSON about Japan: its capital, approximate population, and a fun fact.' },
   ];
 
-  const conversationInput = AgentInput.fromMessages(messages);
-
   for (const msg of messages) {
     console.log(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`);
   }
   console.log('Assistant: ');
 
-  const result = await agent.runStructured(conversationInput, schema);
+  const result = await agent.runStructured(messages, schema);
 
   console.log('Result:');
   console.log(JSON.stringify(result, null, 2));

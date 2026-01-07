@@ -15,7 +15,7 @@
  * 1. When OpenAI API request arrives with function definitions:
  *    - Create a dynamic MCP server listening on 127.0.0.1 (Streamable HTTP)
  *    - Convert user's function definitions into MCP tools
- *    - Inject this MCP server into codex-cli via -c flag (name: "userDefinedFunctions")
+ *    - Inject this MCP server into codex-cli via -c flag (name: Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME)
  *
  * 2. When codex-cli calls these dynamic MCP tools:
  *    - Mark "user-defined function called" in-process
@@ -38,6 +38,48 @@ import http from 'http';
 import { randomBytes } from 'crypto';
 import { DynamicMcpServer } from './dynamicMcpServer.js';
 import type { ChatCompletionFunction } from './types.js';
+import { Prompts } from '../prompts.js';
+
+/**
+ * MCP JSON-RPC request structure.
+ */
+interface MCPRequest<TParams = unknown> {
+  jsonrpc?: '2.0';
+  id?: string | number | null;
+  method: string;
+  params?: TParams;
+}
+
+/**
+ * MCP JSON-RPC response structure.
+ */
+interface MCPResponse<TResult = unknown> {
+  jsonrpc: '2.0';
+  id: string | number | null;
+  result?: TResult;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+/**
+ * MCP tools/call request params.
+ */
+interface ToolsCallParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+/**
+ * MCP tool definition.
+ */
+interface MCPTool {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+}
 
 /**
  * Context for each OpenAI chat completion request.
@@ -110,7 +152,7 @@ class DynamicMcpBridge {
         const address = this.httpServer!.address();
         this.serverPort = typeof address === 'object' && address ? address.port : port;
         console.log(`[DynamicMcpBridge] HTTP server started on ${host}:${this.serverPort}`);
-        resolve(this.serverPort!);
+        resolve(this.serverPort);
       });
 
       this.httpServer.on('error', reject);
@@ -175,12 +217,13 @@ class DynamicMcpBridge {
     let body = '';
 
     req.on('data', (chunk) => {
-      body += chunk.toString();
+      const chunkStr = chunk instanceof Buffer ? chunk.toString() : String(chunk);
+      body += chunkStr;
     });
 
     req.on('end', () => {
       try {
-        const request = JSON.parse(body);
+        const request = JSON.parse(body) as MCPRequest;
         console.log(`[DynamicMcpBridge] MCP request:`, JSON.stringify(request));
 
         // Check if notification
@@ -203,7 +246,7 @@ class DynamicMcpBridge {
         } else if (request.method === 'tools/list') {
           this.handleToolsList(request, res);
         } else if (request.method === 'tools/call') {
-          this.handleToolsCall(request, res);
+          this.handleToolsCall(request as MCPRequest<ToolsCallParams>, res);
         } else {
           // Unknown method
           res.writeHead(200, {
@@ -231,15 +274,15 @@ class DynamicMcpBridge {
   /**
    * Handle initialize request.
    */
-  private handleInitialize(request: any, res: http.ServerResponse): void {
+  private handleInitialize(request: MCPRequest, res: http.ServerResponse): void {
     // Return standard initialize response
-    const response = {
+    const response: MCPResponse = {
       jsonrpc: '2.0',
-      id: request.id,
+      id: request.id ?? null,
       result: {
         protocolVersion: '2025-06-18',
         capabilities: { tools: {} },
-        serverInfo: { name: 'userDefinedFunctions', version: '1.0.0' },
+        serverInfo: { name: Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME, version: '1.0.0' },
       },
     };
 
@@ -256,16 +299,25 @@ class DynamicMcpBridge {
   /**
    * Handle tools/list by aggregating all user-defined functions from all active requests.
    */
-  private handleToolsList(request: any, res: http.ServerResponse): void {
-    const allTools: any[] = [];
+  private handleToolsList(request: MCPRequest, res: http.ServerResponse): void {
+    const allTools: MCPTool[] = [];
 
     // Aggregate tools from all concurrent requests
     for (const context of this.requests.values()) {
       const response = context.mcpServer.handleRequest(request);
-      if (response && response.result && Array.isArray((response.result as any).tools)) {
-        allTools.push(...(response.result as any).tools);
+      if (response?.result && typeof response.result === 'object' && 'tools' in response.result) {
+        const tools = (response.result as { tools?: unknown }).tools;
+        if (Array.isArray(tools)) {
+          allTools.push(...(tools as MCPTool[]));
+        }
       }
     }
+
+    const responseData: MCPResponse<{ tools: MCPTool[] }> = {
+      jsonrpc: '2.0',
+      id: request.id ?? null,
+      result: { tools: allTools },
+    };
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -273,21 +325,14 @@ class DynamicMcpBridge {
       'Access-Control-Allow-Origin': '*',
     });
 
-    res.write(
-      `data: ${JSON.stringify({
-        jsonrpc: '2.0',
-        id: request.id,
-        result: { tools: allTools },
-      })}\n\n`
-    );
-
+    res.write(`data: ${JSON.stringify(responseData)}\n\n`);
     res.end();
   }
 
   /**
    * Handle tools/call by routing to the correct server.
    */
-  private handleToolsCall(request: any, res: http.ServerResponse): void {
+  private handleToolsCall(request: MCPRequest<ToolsCallParams>, res: http.ServerResponse): void {
     const functionName = request.params?.name;
 
     if (!functionName) {

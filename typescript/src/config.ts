@@ -304,23 +304,3 @@ export interface AgentInput {
   maxTokens?: number;
 }
 
-/**
- * Helper namespace for creating AgentInput.
- */
-export namespace AgentInput {
-  /**
-   * Create AgentInput from a simple query string.
-   */
-  export function fromQuery(query: string): AgentInput {
-    return {
-      messages: [{ role: 'user', content: query }],
-    };
-  }
-
-  /**
-   * Create AgentInput from OpenAI-style messages.
-   */
-  export function fromMessages(messages: Message[]): AgentInput {
-    return { messages };
-  }
-}

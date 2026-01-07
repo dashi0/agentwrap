@@ -13,7 +13,8 @@ import { copy } from 'fs-extra';
 import { homedir } from 'os';
 import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
 
-import { BaseAgent } from '../agent.js';
+import { BaseAgent, type RunOptions } from '../agent.js';
+import type { Prompts } from '../prompts.js';
 import type {
   Event,
   ThreadStartedEvent,
@@ -27,9 +28,7 @@ import type {
 } from '../events.js';
 import { EventType } from '../events.js';
 import type {
-  AgentInput,
   AllAgentConfigs,
-  CodexAgentConfig,
   AnthropicSkillConfig,
   MCPStdioSkillConfig,
   MCPSSESkillConfig,
@@ -50,6 +49,10 @@ const CODEX_AUTH_PATH = resolve(CODEX_DIR, 'auth.json');
  * CodexAgent - Agent implementation using OpenAI Codex CLI.
  */
 export class CodexAgent extends BaseAgent {
+  constructor(prompts?: Prompts) {
+    super(prompts);
+  }
+
   /**
    * Configure agent with skills and settings.
    *
@@ -75,12 +78,12 @@ export class CodexAgent extends BaseAgent {
     // Validate agent type
     if (allConfigs.agentConfig.type !== 'codex-agent') {
       throw new Error(
-        `CodexAgent requires CodexAgentConfig, got ${allConfigs.agentConfig.type}`
+        `CodexAgent requires CodexAgentConfig, got ${String(allConfigs.agentConfig.type)}`
       );
     }
 
     // Configure API key if provided or from environment variable
-    const agentConfig = allConfigs.agentConfig as CodexAgentConfig;
+    const agentConfig = allConfigs.agentConfig;
     const apiKey = agentConfig.apiKey || process.env.OPENAI_API_KEY;
     if (apiKey) {
       await configureCodexAuth(apiKey, verbose);
@@ -100,23 +103,13 @@ export class CodexAgent extends BaseAgent {
     return this;
   }
 
-  /**
-   * Execute codex with streaming JSONL events.
-   *
-   * Accepts either an AgentInput object or a simple string query.
-   */
-  async *run(
-    agentInput: AgentInput | string,
-    configOverrides?: Partial<AllAgentConfigs>
+  async *runRaw(
+    prompt: string,
+    options?: RunOptions
   ): AsyncIterable<Event> {
-    // Normalize input (convert string to AgentInput if needed)
-    const normalizedInput = this.normalizeInput(agentInput);
-
+    const { configOverrides } = options || {};
     // Merge config with overrides
     const effectiveConfig = this.getEffectiveConfig(configOverrides);
-
-    // Build prompt from messages
-    const prompt = this.buildPromptFromMessages(normalizedInput.messages);
 
     // Build command with effective config
     const cmd = this.buildCommand(effectiveConfig, prompt);
@@ -140,6 +133,26 @@ export class CodexAgent extends BaseAgent {
   }
 
   /**
+   * Execute codex with streaming JSONL events.
+   *
+   * Accepts AgentInput object, Message array, or simple string query.
+   */
+  async *run(
+    agentInput: Parameters<BaseAgent['run']>[0],
+    options?: RunOptions
+  ): AsyncIterable<Event> {
+    const { configOverrides } = options || {};
+
+    // Normalize input (convert string/Message[] to AgentInput if needed)
+    const normalizedInput = this.normalizeInput(agentInput);
+    
+    // Build prompt from messages
+    const prompt = this.buildPromptFromMessages(normalizedInput.messages);
+    // Execute raw run with prompt
+    yield* this.runRaw(prompt, { configOverrides });
+  }
+
+  /**
    * Get effective configuration with overrides applied.
    */
   private getEffectiveConfig(
@@ -149,7 +162,7 @@ export class CodexAgent extends BaseAgent {
       // No base config, use overrides or defaults
       const agentConfig =
         overrides?.agentConfig && overrides.agentConfig.type === 'codex-agent'
-          ? (overrides.agentConfig as CodexAgentConfig)
+          ? (overrides.agentConfig)
           : { type: 'codex-agent' as const };
       return {
         agentConfig,
@@ -177,7 +190,7 @@ export class CodexAgent extends BaseAgent {
     config: AllAgentConfigs,
     prompt: string
   ): string[] {
-    const agentConfig = config.agentConfig as CodexAgentConfig;
+    const agentConfig = config.agentConfig;
     const sandboxMode = agentConfig.sandboxMode || 'read-only';
     const codexConfig = agentConfig.codexConfig || {};
 
@@ -321,7 +334,8 @@ export class CodexAgent extends BaseAgent {
 
     // Process stdout line by line
     for await (const chunk of stdout) {
-      buffer += chunk.toString();
+      const chunkStr = chunk instanceof Buffer ? chunk.toString() : String(chunk);
+      buffer += chunkStr;
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
@@ -620,6 +634,7 @@ async function configureMCPServer(
 
   // Write config
   await mkdir(dirname(CODEX_CONFIG_PATH), { recursive: true });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
   await writeFile(CODEX_CONFIG_PATH, stringifyToml(config as any), 'utf-8');
 
   if (verbose) {

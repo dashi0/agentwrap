@@ -236,22 +236,24 @@ describe('Config', () => {
   });
 
   describe('AgentInput', () => {
-    it('should create input from query', () => {
-      const input = AgentInput.fromQuery('Test query');
+    it('should create input from query string', () => {
+      const input: AgentInput = {
+        messages: [{ role: 'user', content: 'Test query' }],
+      };
 
       expect(input.messages).toHaveLength(1);
       expect(input.messages[0]?.role).toBe('user');
       expect(input.messages[0]?.content).toBe('Test query');
     });
 
-    it('should create input from messages', () => {
+    it('should create input from messages array', () => {
       const messages = [
         { role: 'user' as const, content: 'Hello' },
         { role: 'assistant' as const, content: 'Hi there' },
         { role: 'user' as const, content: 'How are you?' },
       ];
 
-      const input = AgentInput.fromMessages(messages);
+      const input: AgentInput = { messages };
 
       expect(input.messages).toHaveLength(3);
       expect(input.messages).toEqual(messages);

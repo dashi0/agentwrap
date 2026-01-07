@@ -109,23 +109,68 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
         """
         Handle OpenAI Chat Completion request.
 
-        This method:
-        1. Checks if streaming is requested
-        2. For streaming: returns StreamingResponse with SSE chunks
-        3. For non-streaming: returns ChatCompletionResponse
-        4. Handles function calling if tools/functions are provided
+        This method uses a unified processing path for all requests:
+        1. If functions are provided, sets up MCP bridge conditionally
+        2. Runs agent with unified event processing
+        3. Returns tool_calls response if functions were called, otherwise normal response
+        4. Supports both streaming and non-streaming modes
         """
-        # Check for function calling - uses different logic
+        # Extract functions (if any)
         functions = self._extract_functions(request)
-        if functions:
-            return await self._handle_with_function_calls(request, functions)
-
-        # ===== Unified event processing (streaming vs non-streaming) =====
         is_streaming = request.stream
         response_id = f"chatcmpl-{uuid.uuid4()}"
         created = int(time.time())
 
-        # Convert request to prompt and run agent
+        # Setup MCP bridge conditionally if functions are provided
+        mcp_context = None
+        config_overrides = None
+        terminated = False
+        tool_calls_result = []
+
+        if functions:
+            from ..server.dynamic_mcp_bridge import dynamic_mcp_bridge
+
+            # Register request with dynamic MCP bridge
+            mcp_context = dynamic_mcp_bridge.register_request(functions)
+
+            # Ensure MCP server is started
+            port = await dynamic_mcp_bridge.ensure_server_started(
+                self.mcp_server_host, self.mcp_server_port
+            )
+
+            print(
+                f"[OpenAICompatibleServer] Using dynamic MCP bridge on "
+                f"{self.mcp_server_host}:{port}"
+            )
+            print(
+                f"[OpenAICompatibleServer] Request {mcp_context.request_id} functions: "
+                f"{[f['name'] for f in functions]}"
+            )
+
+            # Create temporary dynamic MCP skill
+            dynamic_mcp_skill = {
+                "type": "mcp",
+                "transport": "sse",
+                "url": f"http://{self.mcp_server_host}:{port}",
+            }
+
+            # Build configOverrides with dynamic MCP skill
+            config_overrides = AllAgentConfigs.from_dict(
+                {
+                    "agent_config": {"type": "codex-agent"},
+                    "skills": [dynamic_mcp_skill],
+                }
+            )
+
+            # Setup termination handler
+            def on_terminate(tool_calls):
+                nonlocal terminated, tool_calls_result
+                terminated = True
+                tool_calls_result = tool_calls
+
+            mcp_context.mcp_server.on_terminate(on_terminate)
+
+        # Convert request to prompt
         prompt = self.convert_request_to_prompt(request)
         agent_input = AgentInput.from_query(prompt)
 
@@ -133,6 +178,7 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
 
         async def generate_stream():
             """Generator for streaming response."""
+            nonlocal terminated
             try:
                 # Send initial chunk with role
                 yield f"data: {json.dumps({
@@ -143,8 +189,13 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                     'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]
                 })}\n\n"
 
-                # Process events
-                for event in self.agent.run(agent_input):
+                # ===== Unified event processing (streaming vs non-streaming, with or without functions) =====
+                for event in self.agent.run(agent_input, config_overrides):
+                    # Check if terminated (function calling completed)
+                    if terminated:
+                        print("[OpenAICompatibleServer] Function calls detected, stopping event processing")
+                        break
+
                     content_chunk = None
 
                     # Convert event to content
@@ -171,13 +222,14 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                             'choices': [{'index': 0, 'delta': {'content': content_chunk}, 'finish_reason': None}]
                         })}\n\n"
 
-                # Send final chunk
+                # Send final chunk based on whether functions were called
+                finish_reason = 'tool_calls' if terminated else 'stop'
                 yield f"data: {json.dumps({
                     'id': response_id,
                     'object': 'chat.completion.chunk',
                     'created': created,
                     'model': request.model,
-                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
+                    'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]
                 })}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -185,24 +237,61 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                 print(f"[OpenAICompatibleServer] Streaming error: {error}")
                 yield f"data: {json.dumps({'error': {'message': str(error), 'type': 'internal_error'}})}\n\n"
 
-        # For streaming, return StreamingResponse
-        if is_streaming:
-            return StreamingResponse(
-                generate_stream(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
+        try:
+            # For streaming, return StreamingResponse
+            if is_streaming:
+                return StreamingResponse(
+                    generate_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                )
 
-        # For non-streaming, collect all content
-        for event in self.agent.run(agent_input):
-            if isinstance(event, MessageEvent):
-                collected_content.append(event.content or "")
+            # For non-streaming, process events synchronously
+            for event in self.agent.run(agent_input, config_overrides):
+                # Check if terminated (function calling completed)
+                if terminated:
+                    print("[OpenAICompatibleServer] Function calls detected, stopping event processing")
+                    break
 
-        content = "".join(collected_content)
-        return self.create_normal_response(request, content)
+                if isinstance(event, MessageEvent):
+                    collected_content.append(event.content or "")
+
+            # Return response based on whether functions were called
+            if terminated and mcp_context:
+                # Function calls were made - return tool_calls response
+                from ..server.dynamic_mcp_bridge import dynamic_mcp_bridge
+
+                tool_calls = mcp_context.mcp_server.get_tool_calls()
+
+                # Remove suffix from function names before returning
+                original_tool_calls = [
+                    ToolCall(
+                        id=tc.id,
+                        function={
+                            "name": dynamic_mcp_bridge.remove_function_suffix(
+                                tc.function["name"]
+                            ),
+                            "arguments": tc.function["arguments"],
+                        },
+                    )
+                    for tc in tool_calls
+                ]
+
+                return self.create_tool_call_response(request, original_tool_calls)
+            else:
+                # Normal response - no function calls
+                content = "".join(collected_content)
+                return self.create_normal_response(request, content)
+
+        finally:
+            # Cleanup: unregister request (but keep dynamic MCP bridge running)
+            if mcp_context:
+                from ..server.dynamic_mcp_bridge import dynamic_mcp_bridge
+
+                dynamic_mcp_bridge.unregister_request(mcp_context.request_id)
 
     def _extract_functions(self, request: ChatCompletionRequest) -> List[Dict[str, Any]]:
         """Extract function definitions from request."""
@@ -287,125 +376,6 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
             model=request.model,
             choices=[choice],
         )
-
-    async def _handle_with_function_calls(
-        self, request: ChatCompletionRequest, functions: List[Dict[str, Any]]
-    ) -> ChatCompletionResponse:
-        """
-        Handle request with function calls.
-
-        Uses Dynamic MCP Bridge to enable codex-cli to call user-defined functions.
-        """
-        from ..server.dynamic_mcp_bridge import dynamic_mcp_bridge
-
-        if not self.agent:
-            raise RuntimeError("Agent not set")
-
-        # Register request with dynamic MCP bridge (adds suffix to function names)
-        context = dynamic_mcp_bridge.register_request(functions)
-
-        # Ensure dynamic MCP bridge HTTP server is started
-        port = await dynamic_mcp_bridge.ensure_server_started(
-            self.mcp_server_host, self.mcp_server_port
-        )
-
-        try:
-            print(
-                f"[OpenAICompatibleServer] Using dynamic MCP bridge on "
-                f"{self.mcp_server_host}:{port}"
-            )
-            print(
-                f"[OpenAICompatibleServer] Request {context.request_id} functions: "
-                f"{[f['name'] for f in functions]}"
-            )
-
-            # Convert request to prompt
-            prompt = self.convert_request_to_prompt(request)
-            agent_input = AgentInput.from_query(prompt)
-
-            # Create temporary dynamic MCP skill for function calling
-            # This is NOT written to config file, only passed via configOverrides
-            dynamic_mcp_skill = {
-                "type": "mcp",
-                "transport": "sse",
-                "url": f"http://{self.mcp_server_host}:{port}",
-            }
-
-            # Build configOverrides with dynamic MCP skill
-            config_overrides = AllAgentConfigs.from_dict(
-                {
-                    "agent_config": {"type": "codex-agent"},
-                    "skills": [dynamic_mcp_skill],
-                }
-            )
-
-            # Set up termination handler
-            terminated = False
-            tool_calls_result = []
-
-            def on_terminate(tool_calls):
-                nonlocal terminated, tool_calls_result
-                terminated = True
-                tool_calls_result = tool_calls
-
-            context.mcp_server.on_terminate(on_terminate)
-
-            # Run agent with configOverrides (dynamic MCP passed via -c flags)
-            # Use a thread to run agent and wait for either completion or termination
-            import threading
-            import queue
-
-            result_queue = queue.Queue()
-
-            def run_agent_thread():
-                try:
-                    content = ""
-                    for event in self.agent.run(agent_input, config_overrides):
-                        if isinstance(event, MessageEvent):
-                            content += event.content or ""
-                    result_queue.put(("content", content))
-                except Exception as e:
-                    result_queue.put(("error", str(e)))
-
-            agent_thread = threading.Thread(target=run_agent_thread)
-            agent_thread.start()
-
-            # Wait for either termination event or agent completion
-            context.mcp_server.termination_event.wait(timeout=30)
-
-            if context.mcp_server.termination_event.is_set():
-                # Terminated (function calls detected)
-                tool_calls = context.mcp_server.get_tool_calls()
-
-                # Remove suffix from function names before returning
-                original_tool_calls = [
-                    ToolCall(
-                        id=tc.id,
-                        function={
-                            "name": dynamic_mcp_bridge.remove_function_suffix(
-                                tc.function["name"]
-                            ),
-                            "arguments": tc.function["arguments"],
-                        },
-                    )
-                    for tc in tool_calls
-                ]
-
-                return self.create_tool_call_response(request, original_tool_calls)
-            else:
-                # Agent completed normally, get result from queue
-                try:
-                    result_type, result_value = result_queue.get(timeout=1)
-                    if result_type == "content":
-                        return self.create_normal_response(request, result_value)
-                    else:
-                        raise RuntimeError(f"Agent error: {result_value}")
-                except queue.Empty:
-                    return self.create_normal_response(request, "Agent timed out")
-
-        finally:
-            # Cleanup: unregister request (but keep dynamic MCP bridge running)
-            dynamic_mcp_bridge.unregister_request(context.request_id)
 
     def _parse_request(self, body: Dict[str, Any]) -> ChatCompletionRequest:
         """Parse request body into ChatCompletionRequest."""

@@ -15,11 +15,7 @@ import { randomUUID } from 'crypto';
 import type { Express, Request, Response } from 'express';
 import { BaseAgent } from '../agent.js';
 import { BaseServer } from '../server.js';
-import { AgentInput } from '../config.js';
-import {
-  convertFunctionCallHistoryToPrompt,
-  mergeFunctionResults,
-} from '../server/functionCallHandler.js';
+import { Prompts } from '../prompts.js';
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
@@ -34,6 +30,7 @@ import {
   isCommandExecutionEvent,
   isSkillInvokedEvent,
 } from '../events.js';
+import { dynamicMcpBridge } from '../server/dynamicMcpBridge.js';
 
 export interface OpenAIServerOptions {
   mcpServerPort?: number;
@@ -88,9 +85,8 @@ export class OpenAICompatibleServer extends BaseServer<
     res: Response
   ) => Promise<boolean>;
 
-  constructor(agent: BaseAgent, options: OpenAIServerOptions = {}) {
-    super();
-    this.agent = agent; // Set agent in BaseServer
+  constructor(agent: BaseAgent, options: OpenAIServerOptions = {}, prompts?: Prompts) {
+    super(agent, prompts);
     this.options = {
       mcpServerPort: options.mcpServerPort ?? 0, // 0 = random port
       mcpServerHost: options.mcpServerHost ?? '127.0.0.1',
@@ -104,7 +100,8 @@ export class OpenAICompatibleServer extends BaseServer<
    */
   protected override registerRoutes(app: Express): void {
     // POST /v1/chat/completions - OpenAI Chat Completion endpoint
-    app.post('/v1/chat/completions', async (req: Request, res: Response) => {
+    app.post('/v1/chat/completions', (req: Request, res: Response) => {
+      void (async () => {
       try {
         const request = req.body as ChatCompletionRequest;
 
@@ -132,32 +129,69 @@ export class OpenAICompatibleServer extends BaseServer<
           });
         }
       }
+      })();
     });
   }
 
   /**
    * Handle OpenAI Chat Completion request.
    *
-   * This method:
-   * 1. Checks if streaming is requested
-   * 2. For streaming: writes SSE chunks to res and returns void
-   * 3. For non-streaming: returns ChatCompletionResponse
-   * 4. Handles function calling if tools/functions are provided
+   * This method uses a unified processing path for all requests:
+   * 1. If functions are provided, sets up MCP bridge conditionally
+   * 2. Runs agent with unified event processing
+   * 3. Returns tool_calls response if functions were called, otherwise normal response
+   * 4. Supports both streaming and non-streaming modes
    */
   override async handleRequest(
     request: ChatCompletionRequest,
     res?: Response
   ): Promise<ChatCompletionResponse> {
-    // Check for function calling - uses different logic
+    // Extract functions (if any)
     const functions = this.extractFunctions(request);
-    if (functions.length > 0) {
-      return this.handleWithFunctionCalls(request, functions);
-    }
-
-    // ===== Unified event processing (streaming vs non-streaming) =====
     const isStreaming = request.stream;
     const responseId = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
+
+    // Convert request to prompt (with tool calling instructions if functions are provided)
+    const basePrompt = this.convertRequestToRawPrompt(request);
+    const prompt = functions.length > 0
+      ? this.prompts.prependToolCallingInstructions(basePrompt, functions)
+      : basePrompt;
+
+    // Setup MCP bridge conditionally if functions are provided
+    let mcpContext: any = null;
+    let configOverrides: any = undefined;
+    let terminated = false;
+    let toolCalls: any[] = [];
+
+    if (functions.length > 0) {
+      // Register request with dynamic MCP bridge
+      mcpContext = dynamicMcpBridge.registerRequest(functions);
+
+      // Ensure MCP server is started
+      const port = await dynamicMcpBridge.ensureServerStarted(
+        this.options.mcpServerHost,
+        this.options.mcpServerPort
+      );
+
+      console.log(
+        `[OpenAICompatibleServer] Using dynamic MCP bridge on ${this.options.mcpServerHost}:${port}`
+      );
+      console.log(
+        `[OpenAICompatibleServer] Request ${mcpContext.requestId} functions:`,
+        functions.map((f) => f.name)
+      );
+
+      // Create temporary dynamic MCP skill
+      const dynamicMcpSkill = {
+        type: 'mcp' as const,
+        transport: 'streamable-http' as const,
+        url: `http://${this.options.mcpServerHost}:${port}`,
+        name: Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME,
+      };
+
+      configOverrides = { skills: [dynamicMcpSkill] };
+    }
 
     // Setup streaming headers if needed
     if (isStreaming && res) {
@@ -177,76 +211,171 @@ export class OpenAICompatibleServer extends BaseServer<
       );
     }
 
-    // Convert request to prompt and run agent
-    const prompt = this.convertRequestToPrompt(request);
-    const agentInput = AgentInput.fromQuery(prompt);
-
     const collectedContent: string[] = [];
 
     try {
-      // Process events - single loop for both streaming and non-streaming
-      for await (const event of this.agent!.run(agentInput)) {
-        let contentChunk: string | null = null;
+      // If functions are provided, use Promise.race to handle termination immediately
+      if (functions.length > 0 && mcpContext) {
+        // Create termination promise
+        const terminationPromise = new Promise<void>((resolve) => {
+          mcpContext.mcpServer.once('terminate', (calls: any[]) => {
+            terminated = true;
+            toolCalls = calls;
+            resolve();
+          });
+        });
 
-        // Convert event to content
-        if (isReasoningEvent(event)) {
-          contentChunk = `[Reasoning] ${event.content}\n`;
-        } else if (isCommandExecutionEvent(event)) {
-          contentChunk = `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
-        } else if (isSkillInvokedEvent(event)) {
-          contentChunk = `[Skill] ${event.skillName}\n`;
-        } else if (isMessageEvent(event)) {
-          contentChunk = event.content;
+        // Create agent execution promise
+        const agentPromise = (async () => {
+          for await (const event of this.agent!.runRaw(prompt, { configOverrides })) {
+            // Check if terminated by tool calls - stop processing if so
+            if (terminated) {
+              break;
+            }
+
+            let contentChunk: string | null = null;
+
+            // Convert event to content
+            if (isReasoningEvent(event)) {
+              contentChunk = `[Reasoning] ${event.content}\n`;
+            } else if (isCommandExecutionEvent(event)) {
+              contentChunk = `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
+            } else if (isSkillInvokedEvent(event)) {
+              contentChunk = `[Skill] ${event.skillName}\n`;
+            } else if (isMessageEvent(event)) {
+              contentChunk = event.content;
+            }
+
+            if (contentChunk) {
+              // Collect message content for final response
+              if (isMessageEvent(event)) {
+                collectedContent.push(contentChunk);
+              }
+
+              // Streaming: also output all event types immediately
+              if (isStreaming && res) {
+                res.write(
+                  `data: ${JSON.stringify({
+                    id: responseId,
+                    object: 'chat.completion.chunk',
+                    created,
+                    model: request.model,
+                    choices: [{ index: 0, delta: { content: contentChunk }, finish_reason: null }],
+                  })}\n\n`
+                );
+              }
+            }
+          }
+        })();
+
+        // Wait for either termination or agent completion
+        // Use allSettled to ensure both promises have a chance to complete
+        await Promise.race([terminationPromise, agentPromise]);
+
+        // Give terminate event a moment to fire if it hasn't yet
+        if (!terminated) {
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
+      } else {
+        // No functions - normal event processing
+        for await (const event of this.agent!.runRaw(prompt, { configOverrides })) {
+          let contentChunk: string | null = null;
 
-        if (contentChunk) {
-          // Collect message content for final response (both streaming and non-streaming)
-          if (isMessageEvent(event)) {
-            collectedContent.push(contentChunk);
+          // Convert event to content
+          if (isReasoningEvent(event)) {
+            contentChunk = `[Reasoning] ${event.content}\n`;
+          } else if (isCommandExecutionEvent(event)) {
+            contentChunk = `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
+          } else if (isSkillInvokedEvent(event)) {
+            contentChunk = `[Skill] ${event.skillName}\n`;
+          } else if (isMessageEvent(event)) {
+            contentChunk = event.content;
           }
 
-          // Streaming: also output all event types immediately
-          if (isStreaming && res) {
+          if (contentChunk) {
+            // Collect message content for final response
+            if (isMessageEvent(event)) {
+              collectedContent.push(contentChunk);
+            }
+
+            // Streaming: also output all event types immediately
+            if (isStreaming && res) {
+              res.write(
+                `data: ${JSON.stringify({
+                  id: responseId,
+                  object: 'chat.completion.chunk',
+                  created,
+                  model: request.model,
+                  choices: [{ index: 0, delta: { content: contentChunk }, finish_reason: null }],
+                })}\n\n`
+              );
+            }
+          }
+        }
+      }
+
+      // Return response based on whether functions were called
+      if (terminated && mcpContext) {
+        console.log('[OpenAICompatibleServer] Function calls detected');
+
+        // Function calls were made - return tool_calls response
+        // Remove suffix from function names
+        const originalToolCalls = toolCalls.map((tc) => ({
+          ...tc,
+          function: {
+            ...tc.function,
+            name: dynamicMcpBridge.removeFunctionSuffix(tc.function.name),
+          },
+        }));
+
+        const toolCallResponse = this.createToolCallResponse(request, originalToolCalls);
+
+        if (res) {
+          if (isStreaming) {
+            // For streaming, send tool calls as delta and end
             res.write(
               `data: ${JSON.stringify({
                 id: responseId,
                 object: 'chat.completion.chunk',
                 created,
                 model: request.model,
-                choices: [{ index: 0, delta: { content: contentChunk }, finish_reason: null }],
+                choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
               })}\n\n`
             );
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.json(toolCallResponse);
           }
         }
-      }
 
-      // Finalize response
-      const content = collectedContent.join('');
-      const normalResponse = this.createNormalResponse(request, content);
+        return toolCallResponse;
+      } else {
+        // Normal response - no function calls
+        const content = collectedContent.join('');
+        const normalResponse = this.createNormalResponse(request, content);
 
-      if (res) {
-        // HTTP usage: write to res
-        if (isStreaming) {
-          // Send final chunk and [DONE]
-          res.write(
-            `data: ${JSON.stringify({
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created,
-              model: request.model,
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-            })}\n\n`
-          );
-          res.write('data: [DONE]\n\n');
-          res.end();
-        } else {
-          // Non-streaming: send JSON
-          res.json(normalResponse);
+        if (res) {
+          if (isStreaming) {
+            // Send final chunk and [DONE]
+            res.write(
+              `data: ${JSON.stringify({
+                id: responseId,
+                object: 'chat.completion.chunk',
+                created,
+                model: request.model,
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+              })}\n\n`
+            );
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else {
+            res.json(normalResponse);
+          }
         }
-      }
 
-      // Always return response (both streaming and non-streaming)
-      return normalResponse;
+        return normalResponse;
+      }
     } catch (error) {
       if (res) {
         if (isStreaming) {
@@ -269,8 +398,12 @@ export class OpenAICompatibleServer extends BaseServer<
           });
         }
       }
-      // Re-throw for caller to handle
       throw error;
+    } finally {
+      // Cleanup MCP context if it was created
+      if (mcpContext) {
+        dynamicMcpBridge.unregisterRequest(mcpContext.requestId);
+      }
     }
   }
 
@@ -300,11 +433,9 @@ export class OpenAICompatibleServer extends BaseServer<
   /**
    * Convert OpenAI request to prompt string.
    */
-  protected convertRequestToPrompt(request: ChatCompletionRequest): string {
-    // Prepare messages (merge function results if present)
-    const messages = mergeFunctionResults(request.messages);
-    // Convert to prompt
-    return convertFunctionCallHistoryToPrompt(messages);
+  protected convertRequestToRawPrompt(request: ChatCompletionRequest): string {
+    // Convert to prompt using prompts instance
+    return this.prompts.functionCallHistoryToPrompt(request.messages);
   }
 
   /**
@@ -376,19 +507,6 @@ export class OpenAICompatibleServer extends BaseServer<
       model: request.model,
       choices: [choice],
     };
-  }
-
-  /**
-   * Handle request with function calls (delegates to BaseServer core logic).
-   */
-  private async handleWithFunctionCalls(
-    request: ChatCompletionRequest,
-    functions: ChatCompletionFunction[]
-  ): Promise<ChatCompletionResponse> {
-    return this.handleWithFunctionCallingCore(request, functions, {
-      mcpServerHost: this.options.mcpServerHost,
-      mcpServerPort: this.options.mcpServerPort,
-    });
   }
 
 }

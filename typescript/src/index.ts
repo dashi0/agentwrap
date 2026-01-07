@@ -5,7 +5,17 @@
  */
 
 // Core agent interfaces
-export { BaseAgent, JSONExtractor, StructuredOutputParser, createStructuredPrompt } from './agent.js';
+export {
+  BaseAgent,
+  JSONExtractor,
+  StructuredOutputParser,
+  createStructuredPrompt,
+  type RunOptions,
+  type RunStructuredOptions,
+} from './agent.js';
+
+// Prompts management
+export { Prompts } from './prompts.js';
 
 // Agent implementations
 export { CodexAgent } from './agents/codexAgent.js';
@@ -41,8 +51,9 @@ export {
   parseConfig,
   mergeConfigs,
   printConfigSummary,
-  AgentInput,
 } from './config.js';
+
+export type { AgentInput } from './config.js';
 
 // Events
 export type {

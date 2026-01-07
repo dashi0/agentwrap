@@ -8,14 +8,14 @@
 import type {
   ChatCompletionMessage,
   ChatCompletionAssistantMessage,
-  ChatCompletionToolMessage,
-  ChatCompletionToolCall,
 } from './types.js';
+import type { Prompts } from '../prompts.js';
 
 /**
  * Convert function call history to a prompt that can be understood by the agent.
  *
  * This is used when continuing a conversation after function calls have been executed.
+ * @deprecated Use prompts.functionCallHistoryToPrompt() instead
  */
 export function convertFunctionCallHistoryToPrompt(messages: ChatCompletionMessage[]): string {
   const parts: string[] = [];
@@ -31,7 +31,7 @@ export function convertFunctionCallHistoryToPrompt(messages: ChatCompletionMessa
       // Handle tool calls
       if (message.tool_calls && message.tool_calls.length > 0) {
         for (const toolCall of message.tool_calls) {
-          const args = JSON.parse(toolCall.function.arguments);
+          const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
           parts.push(
             `Assistant called function: ${toolCall.function.name}\n` +
               `Arguments: ${JSON.stringify(args, null, 2)}`
@@ -41,14 +41,14 @@ export function convertFunctionCallHistoryToPrompt(messages: ChatCompletionMessa
 
       // Legacy function call support
       if (message.function_call) {
-        const args = JSON.parse(message.function_call.arguments);
+        const args = JSON.parse(message.function_call.arguments) as Record<string, unknown>;
         parts.push(
           `Assistant called function: ${message.function_call.name}\n` +
             `Arguments: ${JSON.stringify(args, null, 2)}`
-        );
+          );
       }
     } else if (message.role === 'tool') {
-      const toolMsg = message as ChatCompletionToolMessage;
+      const toolMsg = message;
       parts.push(`Function result (${toolMsg.tool_call_id}): ${toolMsg.content}`);
     } else if (message.role === 'function') {
       parts.push(`Function ${message.name} result: ${message.content}`);
@@ -76,7 +76,7 @@ export function findLastToolCallMessage(
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg?.role === 'assistant' && (msg.tool_calls || msg.function_call)) {
-      return msg as ChatCompletionAssistantMessage;
+      return msg;
     }
   }
   return null;
@@ -104,7 +104,7 @@ export function extractFunctionContext(messages: ChatCompletionMessage[]): Funct
           functions.set(toolCall.function.name, {
             name: toolCall.function.name,
             called: true,
-            arguments: JSON.parse(toolCall.function.arguments),
+            arguments: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
           });
         }
       }
@@ -114,11 +114,11 @@ export function extractFunctionContext(messages: ChatCompletionMessage[]): Funct
         functions.set(message.function_call.name, {
           name: message.function_call.name,
           called: true,
-          arguments: JSON.parse(message.function_call.arguments),
+          arguments: JSON.parse(message.function_call.arguments) as Record<string, unknown>,
         });
       }
     } else if (message.role === 'tool') {
-      const toolMsg = message as ChatCompletionToolMessage;
+      const toolMsg = message;
       // Find the function name from previous assistant message
       const lastCall = findLastToolCallMessage(messages);
       if (lastCall?.tool_calls) {
@@ -131,7 +131,7 @@ export function extractFunctionContext(messages: ChatCompletionMessage[]): Funct
         }
       }
     } else if (message.role === 'function') {
-      const existing = functions.get(message.name!);
+      const existing = functions.get(message.name);
       if (existing) {
         existing.result = message.content || undefined;
       }
@@ -143,6 +143,7 @@ export function extractFunctionContext(messages: ChatCompletionMessage[]): Funct
 
 /**
  * Create a system prompt that explains the function call results.
+ * @deprecated Use prompts.functionResultPrompt() instead
  */
 export function createFunctionResultPrompt(messages: ChatCompletionMessage[]): string {
   const context = extractFunctionContext(messages);
@@ -172,31 +173,3 @@ export function createFunctionResultPrompt(messages: ChatCompletionMessage[]): s
   return parts.join('\n');
 }
 
-/**
- * Merge function call results into the message history for the next turn.
- */
-export function mergeFunctionResults(
-  messages: ChatCompletionMessage[]
-): ChatCompletionMessage[] {
-  // If there are function results, add a system message summarizing them
-  if (hasFunctionResults(messages)) {
-    const resultPrompt = createFunctionResultPrompt(messages);
-
-    // Insert system message after the last function result
-    const lastFunctionIdx = messages.reduce(
-      (lastIdx, msg, idx) => (msg.role === 'tool' || msg.role === 'function' ? idx : lastIdx),
-      -1
-    );
-
-    if (lastFunctionIdx >= 0 && resultPrompt) {
-      const newMessages = [...messages];
-      newMessages.splice(lastFunctionIdx + 1, 0, {
-        role: 'system',
-        content: resultPrompt,
-      });
-      return newMessages;
-    }
-  }
-
-  return messages;
-}
