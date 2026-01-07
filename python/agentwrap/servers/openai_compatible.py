@@ -154,6 +154,7 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                 "type": "mcp",
                 "transport": "sse",
                 "url": f"http://{self.mcp_server_host}:{port}",
+                "name": Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME,
             }
 
             # Build configOverrides with dynamic MCP skill
@@ -274,7 +275,7 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
 
                 tool_calls = mcp_context.mcp_server.get_tool_calls()
 
-                # Remove suffix from function names before returning
+                # Remove prefix from function names before returning
                 original_tool_calls = [
                     ToolCall(
                         id=tc.id,

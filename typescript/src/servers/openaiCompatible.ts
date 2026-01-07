@@ -233,19 +233,7 @@ export class OpenAICompatibleServer extends BaseServer<
               break;
             }
 
-            let contentChunk: string | null = null;
-
-            // Convert event to content
-            if (isReasoningEvent(event)) {
-              contentChunk = `[Reasoning] ${event.content}\n`;
-            } else if (isCommandExecutionEvent(event)) {
-              contentChunk = `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
-            } else if (isSkillInvokedEvent(event)) {
-              contentChunk = `[Skill] ${event.skillName}\n`;
-            } else if (isMessageEvent(event)) {
-              contentChunk = event.content;
-            }
-
+            const contentChunk = this.convertEventToContentChunk(event);
             if (contentChunk) {
               // Collect message content for final response
               if (isMessageEvent(event)) {
@@ -268,8 +256,9 @@ export class OpenAICompatibleServer extends BaseServer<
           }
         })();
 
-        // Wait for either termination or agent completion
-        // Use allSettled to ensure both promises have a chance to complete
+        // Use Promise.race to wait for whichever completes first:
+        // - Either agent termination (via MCP function call)
+        // - Or agent completing normally
         await Promise.race([terminationPromise, agentPromise]);
 
         // Give terminate event a moment to fire if it hasn't yet
@@ -279,19 +268,7 @@ export class OpenAICompatibleServer extends BaseServer<
       } else {
         // No functions - normal event processing
         for await (const event of this.agent!.runRaw(prompt, { configOverrides })) {
-          let contentChunk: string | null = null;
-
-          // Convert event to content
-          if (isReasoningEvent(event)) {
-            contentChunk = `[Reasoning] ${event.content}\n`;
-          } else if (isCommandExecutionEvent(event)) {
-            contentChunk = `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
-          } else if (isSkillInvokedEvent(event)) {
-            contentChunk = `[Skill] ${event.skillName}\n`;
-          } else if (isMessageEvent(event)) {
-            contentChunk = event.content;
-          }
-
+          const contentChunk = this.convertEventToContentChunk(event);
           if (contentChunk) {
             // Collect message content for final response
             if (isMessageEvent(event)) {
@@ -319,7 +296,7 @@ export class OpenAICompatibleServer extends BaseServer<
         console.log('[OpenAICompatibleServer] Function calls detected');
 
         // Function calls were made - return tool_calls response
-        // Remove suffix from function names
+        // Remove prefix from function names
         const originalToolCalls = toolCalls.map((tc) => ({
           ...tc,
           function: {
@@ -405,6 +382,23 @@ export class OpenAICompatibleServer extends BaseServer<
         dynamicMcpBridge.unregisterRequest(mcpContext.requestId);
       }
     }
+  }
+
+  /**
+   * Convert agent event to content chunk.
+   * Extracted to avoid duplication in event processing loops.
+   */
+  private convertEventToContentChunk(event: any): string | null {
+    if (isReasoningEvent(event)) {
+      return `[Reasoning] ${event.content}\n`;
+    } else if (isCommandExecutionEvent(event)) {
+      return `[Command] ${event.command}\n${event.output ? event.output + '\n' : ''}`;
+    } else if (isSkillInvokedEvent(event)) {
+      return `[Skill] ${event.skillName}\n`;
+    } else if (isMessageEvent(event)) {
+      return event.content;
+    }
+    return null;
   }
 
   /**
