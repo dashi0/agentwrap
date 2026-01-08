@@ -9,7 +9,6 @@ import type {
   ChatCompletionMessage,
   ChatCompletionAssistantMessage,
 } from './types.js';
-import type { Prompts } from '../prompts.js';
 
 /**
  * Convert function call history to a prompt that can be understood by the agent.

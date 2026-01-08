@@ -428,6 +428,3 @@ class DynamicMcpBridge {
 
 // Export singleton instance
 export const dynamicMcpBridge = new DynamicMcpBridge();
-
-// Export types
-export type { RequestContext };
