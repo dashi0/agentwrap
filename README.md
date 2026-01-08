@@ -4,6 +4,8 @@
 
 AgentWrap turns agent CLIs into callable libraries and OpenAI-compatible API servers, enabling agent-centric, markdown/skills driven app development with ease.
 
+[![npm version](https://img.shields.io/npm/v/agentwrap.svg)](https://www.npmjs.com/package/agentwrap)
+[![PyPI version](https://img.shields.io/pypi/v/agentwrap.svg)](https://pypi.org/project/agentwrap/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-blue.svg)](https://www.typescriptlang.org/)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -68,7 +70,30 @@ await server.startHttpServer({ port: 8000 });
 
 ### Python
 
-see [examples.py](./python/agentwrap/examples.py).
+```bash
+pip install agentwrap
+```
+
+```python
+from agentwrap import CodexAgent, OpenAICompatibleServer
+
+# Create and configure agent
+agent = CodexAgent()
+agent.configure({
+    "agent_config": {"type": "codex-agent"},
+    "skills": []
+})
+
+# Use as library
+for event in agent.run("Generate a random number for me"):
+    print(event.content)
+
+# Or start as OpenAI-compatible API server
+server = OpenAICompatibleServer(agent)
+await server.start_http_server({"port": 8000})
+```
+
+[More examples](./python/README.md).
 
 ---
 
@@ -118,8 +143,8 @@ AgentWrap provides SDKs in multiple languages with consistent APIs:
 
 | Language | Status | Package | Documentation |
 |----------|--------|---------|---------------|
-| 🐍 **Python** | WIP | `pip install agentwrap` | [Python Docs](./python/README.md) |
-| 📘 **TypeScript** | ✅ Stable | `npm install agentwrap` | [TypeScript Docs](./typescript/README.md) |
+| 🐍 **Python** | ✅ Published | [`pip install agentwrap`](https://pypi.org/project/agentwrap/) | [Python Docs](./python/README.md) |
+| 📘 **TypeScript** | ✅ Published | [`npm install agentwrap`](https://www.npmjs.com/package/agentwrap) | [TypeScript Docs](./typescript/README.md) |
 
 ---
 
