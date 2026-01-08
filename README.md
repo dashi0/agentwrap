@@ -49,7 +49,7 @@ import { CodexAgent } from 'agentwrap';
 
 const agent = new CodexAgent();
 await agent.configure({
-  agent_config: { type: 'codex-agent', apiKey: '' },
+  agent_config: { type: 'codex-agent', apiKey: 'OPENA_API_KEY' },
   skills: [
     {type: 'anthropic-skill', path: './skills/random'}
   ]
@@ -80,20 +80,22 @@ from agentwrap import CodexAgent, OpenAICompatibleServer
 # Create and configure agent
 agent = CodexAgent()
 agent.configure({
-    "agent_config": {"type": "codex-agent"},
-    "skills": []
+    "agent_config": {"type": "codex-agent", "api_key": "OPENA_API_KEY"},
+    "skills": [
+      {"type": "anthropic-skill", "path": "./skills/random"}
+    ]
 })
 
 # Use as library
 for event in agent.run("Generate a random number for me"):
-    print(event.content)
+    print(event)
 
 # Or start as OpenAI-compatible API server
 server = OpenAICompatibleServer(agent)
 await server.start_http_server({"port": 8000})
 ```
 
-[More examples](./python/README.md).
+[More examples](./python/agentwrap/examples.py).
 
 ---
 

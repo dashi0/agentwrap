@@ -16,16 +16,21 @@ from agentwrap import CodexAgent, OpenAICompatibleServer
 # Create and configure agent
 agent = CodexAgent()
 agent.configure({
-    "agent_config": {"type": "codex-agent"},
-    "skills": []
+    "agent_config": {"type": "codex-agent", "api_key": "OPENA_API_KEY"},
+    "skills": [
+      {"type": "anthropic-skill", "path": "./skills/random"}
+    ]
 })
 
-# Create OpenAI-compatible server
-server = OpenAICompatibleServer(agent)
+# Use as library
+for event in agent.run("Generate a random number for me"):
+    print(event)
 
-# Start HTTP server
+# Or start as OpenAI-compatible API server
+server = OpenAICompatibleServer(agent)
 await server.start_http_server({"port": 8000})
 ```
+[More examples](./agentwrap/examples.py).
 
 ## Features
 
