@@ -154,7 +154,6 @@ class OpenAICompatibleServer(BaseServer[ChatCompletionRequest, ChatCompletionRes
                 "type": "mcp",
                 "transport": "sse",
                 "url": f"http://{self.mcp_server_host}:{port}",
-                "name": Prompts.USER_DEFINED_FUNCTIONS_MCP_NAME,
             }
 
             # Build configOverrides with dynamic MCP skill

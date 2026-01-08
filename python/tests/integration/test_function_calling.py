@@ -227,8 +227,8 @@ async def test_dynamic_mcp_bridge_singleton():
 
 
 @pytest.mark.asyncio
-async def test_function_name_suffixing():
-    """Test that function names are properly suffixed to avoid conflicts."""
+async def test_function_name_prefixing():
+    """Test that function names are properly prefixed to avoid conflicts."""
     # Register two requests with same function name
     functions = [
         {
@@ -258,14 +258,14 @@ async def test_function_name_suffixing():
 
         # Should be different
         assert suffixed1 != suffixed2
-        assert suffixed1.startswith("test_function_")
-        assert suffixed2.startswith("test_function_")
+        assert suffixed1.endswith("_test_function")
+        assert suffixed2.endswith("_test_function")
 
         # Both should map to original name
         assert context1.function_name_map[suffixed1] == "test_function"
         assert context2.function_name_map[suffixed2] == "test_function"
 
-        print(f"✅ Function names properly suffixed:")
+        print(f"✅ Function names properly prefixed:")
         print(f"   Request 1: test_function -> {suffixed1}")
         print(f"   Request 2: test_function -> {suffixed2}")
 
