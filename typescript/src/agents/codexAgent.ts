@@ -7,7 +7,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { copy } from 'fs-extra';
 import { homedir } from 'os';
@@ -272,15 +272,16 @@ export class CodexAgent extends BaseAgent {
    * Get path to codex binary (from node_modules or global).
    */
   private getCodexPath(): string {
-    // Try to use local node_modules codex
+    // Try to use codex from @openai/codex dependency
     try {
-      const __filename = fileURLToPath(import.meta.url);
-      const __dirname = dirname(__filename);
-      const localCodex = resolve(__dirname, '../../node_modules/.bin/codex');
-      // Assume it exists if we got here
-      return localCodex;
+      // Use require.resolve to find @openai/codex package
+      // This works correctly whether agentwrap is installed or in development
+      const require = createRequire(import.meta.url);
+      const codexPkgPath = require.resolve('@openai/codex/package.json');
+      const codexBinPath = codexPkgPath.replace('package.json', 'bin/codex.js');
+      return codexBinPath;
     } catch {
-      // Fallback to global codex
+      // Fallback to codex in PATH
       return 'codex';
     }
   }
