@@ -1,6 +1,6 @@
 # Codex Installation Guide
 
-AgentWrap's `CodexAgent` requires the OpenAI Codex CLI to be installed on your system. Unlike the TypeScript package which bundles Codex as a dependency, Python cannot auto-install Node.js CLI tools.
+AgentWrap's `CodexAgent` requires the [OpenAI Codex CLI](https://openai.com/codex/) to be installed on your system. Unlike the TypeScript package which bundles Codex as a dependency, Python cannot auto-install Node.js CLI tools.
 
 ## Quick Installation
 
@@ -112,19 +112,6 @@ EXPOSE 8000
 CMD ["python", "-c", "from agentwrap import CodexAgent; print('AgentWrap ready!')"]
 ```
 
-### Building and Running
-
-```bash
-# Build the image
-docker build -t my-agentwrap-app .
-
-# Run the container
-docker run -it \
-  -e OPENAI_API_KEY=your_key_here \
-  -v $(pwd)/skills:/app/skills \
-  my-agentwrap-app
-```
-
 ## Verification
 
 Test that AgentWrap can find Codex:
@@ -139,43 +126,6 @@ try:
 except RuntimeError as e:
     print(f"❌ Error: {e}")
 ```
-
-## Troubleshooting
-
-### `codex: command not found`
-
-**Problem**: The Codex CLI is not in your PATH.
-
-**Solutions**:
-1. Verify installation: `npm list -g @openai/codex`
-2. Check npm global bin path: `npm config get prefix`
-3. Add to PATH: `export PATH="$PATH:$(npm config get prefix)/bin"`
-4. Reinstall globally: `npm install -g @openai/codex`
-
-### Permission Errors on Linux/macOS
-
-**Problem**: `EACCES` permission errors when installing globally.
-
-**Solution**: Configure npm to use a different directory:
-```bash
-mkdir ~/.npm-global
-npm config set prefix '~/.npm-global'
-echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
-source ~/.bashrc
-npm install -g @openai/codex
-```
-
-### Docker: `codex: not found`
-
-**Problem**: Codex CLI not available in Docker container.
-
-**Solution**: Ensure Node.js and Codex are installed in your Dockerfile (see sample above).
-
-## Alternative: Using Pre-built Docker Images
-
-If you don't want to manage Codex installation yourself, consider using a pre-configured base image (if available from your organization or the community).
-
-**Note**: There is currently no official AgentWrap Docker image with Codex pre-installed, but you can create one using the sample Dockerfile above and publish it to your own registry.
 
 ## Support
 

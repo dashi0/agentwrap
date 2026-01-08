@@ -12,7 +12,7 @@ npm install -g @openai/codex
 
 **Note**: Unlike the TypeScript package which bundles Codex as a dependency, Python cannot auto-install Node.js CLI tools. You must install Codex globally.
 
-📚 **Detailed installation guide**: See [agentwrap/docs/codex-installation-guide.md](./agentwrap/docs/codex-installation-guide.md) for platform-specific instructions, Docker setup, and troubleshooting.
+📚 **Detailed installation guide**: See [docs/codex-installation-guide.md](https://github.com/dashi0/agentwrap/blob/master/docs/codex-installation-guide.md) for platform-specific instructions, Docker setup, and troubleshooting.
 
 ## Installation
 

@@ -74,6 +74,12 @@ await server.startHttpServer({ port: 8000 });
 pip install agentwrap
 ```
 
+**Additional setup required**: CodexAgent requires the [OpenAI Codex CLI](https://openai.com/codex/) to be installed globally:
+```bash
+npm install -g @openai/codex
+```
+See [docs/codex-installation-guide.md](./docs/codex-installation-guide.md) for detailed instructions.
+
 ```python
 from agentwrap import CodexAgent, OpenAICompatibleServer
 
