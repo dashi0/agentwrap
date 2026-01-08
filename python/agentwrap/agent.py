@@ -184,6 +184,18 @@ class BaseAgent(ABC):
         """Initialize agent."""
         self.config: Optional[AllAgentConfigs] = None
 
+    def check_prerequisites(self) -> None:
+        """
+        Check if all prerequisites for this agent are met.
+
+        Subclasses should override this to check for required tools,
+        environment variables, or other dependencies.
+
+        Raises:
+            RuntimeError: If prerequisites are not met
+        """
+        pass
+
     def _normalize_input(self, agent_input: Union[AgentInput, str]) -> AgentInput:
         """
         Normalize input to AgentInput format.

@@ -131,6 +131,32 @@ class CodexAgent(BaseAgent):
 
         return self
 
+    def check_prerequisites(self) -> None:
+        """
+        Check if codex CLI is available.
+
+        Raises:
+            RuntimeError: If codex CLI is not found in PATH
+        """
+        if not shutil.which("codex"):
+            error_msg = """
+╔══════════════════════════════════════════════════════════════╗
+║  Codex CLI not found!                                        ║
+╚══════════════════════════════════════════════════════════════╝
+
+AgentWrap's CodexAgent requires the Codex CLI to be installed.
+
+📦 Installation:
+   npm install -g @openai/codex
+
+📚 Documentation:
+   https://github.com/dashi0/agentwrap#prerequisites
+
+Note: Unlike the TypeScript package, Python cannot auto-install
+Node.js CLI tools. You need to install Codex globally.
+"""
+            raise RuntimeError(error_msg)
+
     def run(
         self,
         agent_input: Union[AgentInput, str],
@@ -148,6 +174,9 @@ class CodexAgent(BaseAgent):
         Yields:
             Event objects parsed from codex JSONL output
         """
+        # Check prerequisites (codex CLI availability)
+        self.check_prerequisites()
+
         # Normalize input (convert string to AgentInput if needed)
         normalized_input = self._normalize_input(agent_input)
 

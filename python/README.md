@@ -2,6 +2,18 @@
 
 Wrap agents, ship APIs - Turn agent CLIs into libraries and OpenAI-compatible servers
 
+## Prerequisites
+
+CodexAgent requires the OpenAI Codex CLI to be installed:
+
+```bash
+npm install -g @openai/codex
+```
+
+**Note**: Unlike the TypeScript package which bundles Codex as a dependency, Python cannot auto-install Node.js CLI tools. You must install Codex globally.
+
+📚 **Detailed installation guide**: See [agentwrap/docs/codex-installation-guide.md](./agentwrap/docs/codex-installation-guide.md) for platform-specific instructions, Docker setup, and troubleshooting.
+
 ## Installation
 
 ```bash
