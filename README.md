@@ -156,6 +156,12 @@ AgentWrap provides SDKs in multiple languages with consistent APIs:
 
 ---
 
+## 📋 Changelog
+
+See [CHANGELOG.md](./docs/CHANGELOG.md) for release history and version updates.
+
+---
+
 ## 🤝 Contributing
 
 We welcome contributions! Please read [AGENTS.md](./AGENTS.md) for development guidelines.

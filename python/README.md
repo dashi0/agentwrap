@@ -56,6 +56,10 @@ await server.start_http_server({"port": 8000})
 
 For full documentation, visit: https://github.com/dashi0/agentwrap
 
+## Changelog
+
+See [CHANGELOG.md](https://github.com/dashi0/agentwrap/blob/master/docs/CHANGELOG.md) for release history and version updates.
+
 ## License
 
 MIT
