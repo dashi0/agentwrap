@@ -1,6 +1,6 @@
 {
   "name": "agentwrap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wrap agents, ship APIs - Turn agent CLIs into libraries and OpenAI-compatible servers",
   "type": "module",
   "main": "./dist/index.cjs",
